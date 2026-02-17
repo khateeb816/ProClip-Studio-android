@@ -200,6 +200,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
 
                   const SizedBox(height: 40),
+                  
+                  // Usage Statistics
+                  Row(
+                    children: [
+                      _buildStatBox(
+                        'Clips Exported',
+                        '${_userData?['clipsExported'] ?? 0}',
+                        Icons.movie_outlined,
+                        Colors.blueAccent,
+                      ),
+                      const SizedBox(width: 16),
+                      _buildStatBox(
+                        'Clips Uploaded',
+                        '${_userData?['clipsUploaded'] ?? 0}',
+                        Icons.cloud_upload_outlined,
+                        Colors.greenAccent,
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 32),
 
                   // Account Info Card
                   Container(
@@ -334,6 +355,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
             fontWeight: FontWeight.bold,
             color: Colors.black,
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatBox(String label, String value, IconData icon, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: color.withValues(alpha: 0.2)),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: color, size: 24),
+            const SizedBox(height: 8),
+            Text(
+              value,
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey[400],
+              ),
+            ),
+          ],
         ),
       ),
     );

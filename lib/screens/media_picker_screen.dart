@@ -7,7 +7,9 @@ import 'package:device_info_plus/device_info_plus.dart';
       // Preload service removed
 
 import '../services/video_cache_manager.dart';
+import '../services/auth_service.dart';
 import 'editor_screen.dart'; // Import EditorScreen
+import 'profile_screen.dart'; // For navigation to premium
 
 class MediaPickerScreen extends StatefulWidget {
   const MediaPickerScreen({super.key});
@@ -20,11 +22,21 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
   List<AssetEntity> _assets = [];
   final List<AssetEntity> _selectedAssets = [];
   bool _isLoading = true;
+  final _authService = AuthService();
+  Map<String, dynamic>? _userData;
 
   @override
   void initState() {
     super.initState();
     _loadCachedAssets();
+    _loadUserData();
+  }
+
+  Future<void> _loadUserData() async {
+    final data = await _authService.getUserData();
+    if (mounted) {
+      setState(() => _userData = data);
+    }
   }
 
   void _loadCachedAssets() {
@@ -115,10 +127,48 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
       if (_selectedAssets.contains(asset)) {
         _selectedAssets.remove(asset);
       } else {
+        // Restriction Check: Free users only 1 video
+        final status = _userData?['subscriptionStatus'] as String? ?? 'free';
+        if (status == 'free' && _selectedAssets.length >= 1) {
+          _showFreeLimitDialog();
+          return;
+        }
+        
         _selectedAssets.add(asset);
         // Performance: Start preloading immediately on selection
       }
     });
+  }
+
+  void _showFreeLimitDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("Free Plan Limit", style: TextStyle(color: Colors.white)),
+        content: const Text(
+          "Free users can only select 1 video at a time. Upgrade to Premium to select multiple videos.",
+          style: TextStyle(color: Colors.grey),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("OK"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ProfileScreen()),
+              );
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black),
+            child: const Text("Update to Premium"),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _proceedToEditor() async {

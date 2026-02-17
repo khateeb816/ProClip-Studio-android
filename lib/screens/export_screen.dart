@@ -7,6 +7,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/ffmpeg_service.dart';
 import '../services/notification_service.dart';
 import '../models/video_settings.dart';
+import '../services/auth_service.dart';
+import 'profile_screen.dart';
+import 'home_screen.dart';
 
 class ExportScreen extends StatefulWidget {
   final List<File> videoFiles;
@@ -43,6 +46,7 @@ class ExportScreen extends StatefulWidget {
 }
 
 class _ExportScreenState extends State<ExportScreen> {
+  final _authService = AuthService();
   int _currentVideoIndex = 0;
   int _currentClipIndex = 0;
   int _totalClipsForCurrentVideo = 0;
@@ -69,7 +73,7 @@ class _ExportScreenState extends State<ExportScreen> {
   }
 
 
-  void _cancelExport() {
+  void _cancelExport({bool isLimitReached = false}) {
     _isCancelling = true;
     FFMpegService.cancelExport();
     // CRITICAL: Cancel notification multiple times to ensure dismissal
@@ -77,11 +81,59 @@ class _ExportScreenState extends State<ExportScreen> {
     Future.delayed(const Duration(milliseconds: 50), () {
       NotificationService.cancelAll();
     });
+
+    if (isLimitReached) {
+      _showLimitReachedDialog();
+      return;
+    }
+
     Future.delayed(const Duration(milliseconds: 150), () {
       if (mounted) {
         Navigator.pop(context);
       }
     });
+  }
+
+  void _showLimitReachedDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("Export Limit Reached", style: TextStyle(color: Colors.white)),
+        content: const Text(
+          "You have reached the free limit of 10 exported clips. Please upgrade to Premium to continue exporting unlimited clips.",
+          style: TextStyle(color: Colors.grey),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              // Redirect to Home
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const HomeScreen()),
+                (route) => false,
+              );
+            },
+            child: const Text("OK"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              // Redirect to Profile
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                (route) => route.isFirst, // Keep home as first if possible, or just go to profile
+              );
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black),
+            child: const Text("Update to Premium"),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _startBatchPipeline() async {
@@ -149,6 +201,18 @@ class _ExportScreenState extends State<ExportScreen> {
         for (int c = 0; c < plan.length; c++) {
             if (!mounted || FFMpegService.isCancelled || _isCancelling) break;
             
+            // Check Export Limit for Free Users
+            final userData = await _authService.getUserData();
+            final status = userData?['subscriptionStatus'] as String? ?? 'free';
+            final exportedCount = userData?['clipsExported'] as int? ?? 0;
+
+            if (status == 'free' && exportedCount >= 10) {
+              if (mounted) {
+                _cancelExport(isLimitReached: true);
+              }
+              break;
+            }
+
             final clip = plan[c];
             final start = clip['start']!;
             final end = clip['end']!;
@@ -248,6 +312,7 @@ class _ExportScreenState extends State<ExportScreen> {
 
             if (mounted && resultPath != null) {
                // SUCCESSFUL GENERATION
+               _authService.incrementClipStats(isExport: true);
                // ... (Keep existing gallery save logic)
                
                // Copy to Custom Path (Best Effort)

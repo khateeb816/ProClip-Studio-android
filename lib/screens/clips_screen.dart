@@ -7,6 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'player_screen.dart';
+import '../services/auth_service.dart';
 
 class ClipsScreen extends StatefulWidget {
   const ClipsScreen({super.key});
@@ -18,6 +19,7 @@ class ClipsScreen extends StatefulWidget {
 enum FilterState { all, uploaded, notUploaded }
 
 class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  final _authService = AuthService();
   List<AssetEntity> _sourceClips = []; // Master list from Gallery
   List<AssetEntity> _clips = [];      // Filtered list for Display
   bool _isLoading = true;
@@ -254,6 +256,10 @@ class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStat
   Future<void> _markAsUploaded(String path, String platform) async {
     final fileName = path.split('/').last;
     await ClipRepository.markUploaded(fileName, platform);
+    
+    // Increment stats in Firestore
+    _authService.incrementClipStats(isUpload: true);
+    
     _calculateStats();
     if (mounted) setState(() {}); // Refresh UI
   }

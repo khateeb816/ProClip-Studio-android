@@ -125,6 +125,8 @@ class AuthService {
         'subscriptionPlan': null, // No plan for free users
         'subscriptionExpiry': null, // No expiry for free users
         'isActive': true, // Account is active by default
+        'clipsExported': 0, // Number of clips exported
+        'clipsUploaded': 0, // Number of clips shared/uploaded
         'createdAt': FieldValue.serverTimestamp(),
         'lastLogin': FieldValue.serverTimestamp(),
       });
@@ -199,6 +201,24 @@ class AuthService {
     } catch (e) {
       print('Error getting user data: $e');
       return null;
+    }
+  }
+
+  // Increment clip statistics
+  Future<void> incrementClipStats({bool isExport = false, bool isUpload = false}) async {
+    try {
+      final uid = currentUser?.uid;
+      if (uid == null) return;
+
+      final updates = <String, dynamic>{};
+      if (isExport) updates['clipsExported'] = FieldValue.increment(1);
+      if (isUpload) updates['clipsUploaded'] = FieldValue.increment(1);
+
+      if (updates.isNotEmpty) {
+        await _firestore.collection('users').doc(uid).update(updates);
+      }
+    } catch (e) {
+      print('Error incrementing clip stats: $e');
     }
   }
 }
