@@ -144,12 +144,11 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Beautiful Logo/Icon
+              // Beautiful Logo
               Container(
-                width: 120,
-                height: 120,
+                width: 140,
+                height: 140,
                 decoration: BoxDecoration(
-                  color: Colors.cyanAccent.withValues(alpha: 0.1),
                   shape: BoxShape.circle,
                   boxShadow: [
                     BoxShadow(
@@ -159,10 +158,14 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                     ),
                   ],
                 ),
-                child: const Icon(
-                  Icons.videocam_rounded,
-                  size: 64,
-                  color: Colors.cyanAccent,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(70),
+                  child: Image.asset(
+                    'assets/logo.png',
+                    width: 140,
+                    height: 140,
+                    fit: BoxFit.cover,
+                  ),
                 ),
               ),
               

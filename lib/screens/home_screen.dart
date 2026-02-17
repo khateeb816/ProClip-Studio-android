@@ -152,17 +152,28 @@ class _HomeTabState extends State<_HomeTab> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Logo or Icon
+                // Logo
                 Container(
-                  padding: const EdgeInsets.all(30),
+                  width: 120,
+                  height: 120,
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
                     shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.cyanAccent.withValues(alpha: 0.3),
+                        blurRadius: 20,
+                        spreadRadius: 3,
+                      ),
+                    ],
                   ),
-                  child: Icon(
-                    Icons.video_library_rounded,
-                    size: 80,
-                    color: Theme.of(context).colorScheme.primary,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(60),
+                    child: Image.asset(
+                      'assets/logo.png',
+                      width: 120,
+                      height: 120,
+                      fit: BoxFit.cover,
+                    ),
                   ),
                 ),
                 
