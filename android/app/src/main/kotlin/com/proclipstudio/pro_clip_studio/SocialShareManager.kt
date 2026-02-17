@@ -173,22 +173,59 @@ class SocialShareManager(private val context: Context) {
             if (title.isNotEmpty()) putExtra(Intent.EXTRA_TEXT, title)
             
             clipData = ClipData.newRawUri("Video", uri) // Safety
-            
-            setPackage(PKG_INSTAGRAM)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
-        try {
-            if (isValidIntent(intent)) {
-                context.startActivity(intent)
-            } else {
-                shareToSystemUri(uri, title)
+        // CRITICAL: Filter for Feed/Reels and AVOID Story & Direct Message
+        intent.setPackage(PKG_INSTAGRAM)
+        val matches = context.packageManager.queryIntentActivities(intent, 0)
+        
+        // Log all candidates for debugging
+        matches.forEach { Log.d(TAG, "[$PKG_INSTAGRAM Candidate] ${it.activityInfo.name}") }
+
+        // Smart Selection Logic
+        val bestActivity = matches.asSequence()
+            .map { it.activityInfo.name }
+            .filter { name ->
+                val lower = name.lowercase()
+                // EXCLUDE: Story (15s limit) and Direct (Message)
+                !lower.contains("story") && !lower.contains("direct")
             }
+            .sortedBy { name ->
+                val lower = name.lowercase()
+                // PRIORITIZE: Standard Feed/Post > Reels > Others
+                // "ShareHandlerActivity" is the safest bet for full "New Post" flow
+                when {
+                    lower.endsWith("sharehandleractivity") && !lower.contains("reel") -> 0 // Highest: Standard Feed
+                    lower.contains("reel") -> 1        // Medium: Reel specific (sometimes 15s on old versions)
+                    else -> 2                          // Low
+                }
+            }
+            .firstOrNull()
+
+        if (bestActivity != null) {
+            Log.d(TAG, "Strictly targeting Instagram Activity: $bestActivity")
+            // DEBUG: Show user which activity is launching (Temporary)
+             android.os.Handler(android.os.Looper.getMainLooper()).post {
+                Toast.makeText(context, "Mode: ${bestActivity.substringAfterLast('.')}", Toast.LENGTH_LONG).show()
+            }
+            intent.setClassName(PKG_INSTAGRAM, bestActivity)
+        } else {
+            Log.w(TAG, "Could not find specific Instagram Feed/Reel activity. Falling back to package default.")
+            intent.setPackage(PKG_INSTAGRAM)
+        }
+
+        try {
+            context.startActivity(intent)
         } catch (e: Exception) {
+            Log.e(TAG, "Instagram Launch Error: ${e.message}")
             shareToSystemUri(uri, title)
         }
     }
+
+    // REMOVED findBestActivity helper as logic is now specific per platform
+
 
     /**
      * Share to YouTube

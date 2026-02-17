@@ -1049,6 +1049,7 @@ class _ClipTileState extends State<ClipTile> with AutomaticKeepAliveClientMixin 
                         _buildMiniUploadBtn("tiktok", FontAwesomeIcons.tiktok, Colors.white, filePath, fileNameForTracking),
                         _buildMiniUploadBtn("instagram", FontAwesomeIcons.instagram, Colors.pinkAccent, filePath, fileNameForTracking),
                         _buildMiniUploadBtn("youtube", FontAwesomeIcons.youtube, Colors.redAccent, filePath, fileNameForTracking),
+                        const SizedBox(width: 16), // Added padding as requested
                       ],
                     );
                   },
