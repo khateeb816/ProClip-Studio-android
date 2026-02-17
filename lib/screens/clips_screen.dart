@@ -7,6 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'player_screen.dart';
+import 'profile_screen.dart';
 import '../services/auth_service.dart';
 
 class ClipsScreen extends StatefulWidget {
@@ -328,6 +329,38 @@ class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStat
     }
   }
 
+  void _showUploadLimitDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("Upload Limit Reached", style: TextStyle(color: Colors.white)),
+        content: const Text(
+          "You have reached the free limit of 10 uploaded clips. Please upgrade to Premium to continue sharing unlimited clips.",
+          style: TextStyle(color: Colors.grey),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("OK"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ProfileScreen()),
+              );
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black),
+            child: const Text("Update to Premium"),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _shareToPlatform(String path, String platform) async {
     // Start background service to keep app alive
     await FlutterBackgroundService().startService();
@@ -361,6 +394,19 @@ class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStat
     }
 
     try {
+      // Check Upload Limit for Free Users
+      final userData = await _authService.getUserData();
+      final status = userData?['subscriptionStatus'] as String? ?? 'free';
+      final uploadedCount = userData?['clipsUploaded'] as int? ?? 0;
+
+      if (status == 'free' && uploadedCount >= 10) {
+        if (mounted) {
+          _showUploadLimitDialog();
+        }
+        await _savePendingUpload(null, null);
+        return;
+      }
+
       final prefs = await SharedPreferences.getInstance();
       final title = prefs.getString('default_video_title') ?? "";
       
