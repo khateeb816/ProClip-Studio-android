@@ -2,10 +2,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:file_picker/file_picker.dart';
-import '../services/ffmpeg_service.dart'; // Restore FFMpegService
-import '../services/metadata_service.dart'; // Restore MetadataService
+import '../services/ffmpeg_service.dart';
+import '../services/metadata_service.dart';
+import 'package:audioplayers/audioplayers.dart';
  
 import 'export_screen.dart';
+import 'audio_picker_screen.dart';
+import 'video_audio_picker_screen.dart';
 import '../models/video_settings.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
 
@@ -35,24 +38,28 @@ class _EditorScreenState extends State<EditorScreen> {
   String _audioMode = "mix"; // mix, background, original
   bool _isExporting = false;
   double _exportProgress = 0.0;
-  Size _viewportSize = Size.zero; // For centering calculations
+  Size _viewportSize = Size.zero;
+  bool _isMuted = true; // Default to muted
+  
+  // Audio Player for Background Music
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  bool _isAudioLoaded = false;
 
-  // Zoom Logic
+  // Zoom Logic (Global)
   final TransformationController _transformController = TransformationController();
   
-  // ignore: unused_field
-  String _fitMode = 'none'; // 'none', 'width', 'height'
-  String? _videoError; // To store video initialization errors
+  String _fitMode = 'none'; 
+  double? _draggedSliderValue; // For smooth slider dragging; 
+  String? _videoError; 
 
-  // Tabs
-  // Export Settings
+  // Export Settings (Global)
   int _exportHeight = 720;
-  int _exportFps = 30; // Default 30 FPS for 720p 30fps recording
+  int _exportFps = 30; 
   
-  // Tabs
-  int _selectedTabIndex = 0; // 0: Edit, 1: Audio, 2: Ratio
-
-  // Clip Count
+  // Tabs (4 Sections)
+  int _selectedTabIndex = 0; // 0: Video, 1: Clips, 2: Audio, 3: Ratio
+  
+  // Clip Count (Global)
   bool _isAutoClipCount = true;
   int _customClipCount = 1;
   
@@ -75,20 +82,60 @@ class _EditorScreenState extends State<EditorScreen> {
     // Initialize empty settings first
     _videoSettings = _videos.map((file) => VideoSettings(videoPath: file.path)).toList();
     
+    // Setup Audio Player Listeners
+    _setupAudioPlayer();
+
     // Load metadata for all and init player for first
     _loadInitialData();
   }
 
-  Future<void> _loadInitialData() async {
-    // Optimization: Do NOT load metadata for all videos upfront.
-    // Just initialize the first player.
-    _initPlayer();
-    
-    // Optional: Pre-warm decoder if needed
-    // VideoPlayerController.networkUrl(Uri.parse("about:blank")).initialize();
+  void _setupAudioPlayer() {
+    // Configure AudioContext to mix with other audio sources (like video_player)
+    // and not duck others.
+    final AudioContext audioContext = AudioContext(
+      iOS: AudioContextIOS(
+        category: AVAudioSessionCategory.playback,
+        options: {
+          AVAudioSessionOptions.mixWithOthers,
+        },
+      ),
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        stayAwake: true,
+        contentType: AndroidContentType.music,
+        usageType: AndroidUsageType.media,
+        audioFocus: AndroidAudioFocus.none, // Do not request focus, prevents pausing video
+      ),
+    );
+    AudioPlayer.global.setAudioContext(audioContext);
+
+    _audioPlayer.onPlayerStateChanged.listen((state) {
+       // Sync state if needed, but mostly we drive audio FROM video
+    });
   }
 
-  Future<void> _initPlayer({int index = 0}) async {
+
+  Future<void> _loadInitialData() async {
+    // 1. Initialize First Player (Paused by default)
+    _initPlayer(index: 0, autoPlay: false);
+    
+    // 2. Generate Thumbnails for all videos for the selector
+    _generateThumbnails();
+  }
+
+  Future<void> _generateThumbnails() async {
+    for (int i = 0; i < _videoSettings.length; i++) {
+        if (!mounted) break;
+      final path = await FFMpegService.generateThumbnail(_videoSettings[i].videoPath);
+      if (mounted && path != null) {
+        setState(() {
+          _videoSettings[i].thumbnailPath = path;
+        });
+      }
+    }
+  }
+
+  Future<void> _initPlayer({int index = 0, bool autoPlay = true}) async {
     try {
       final file = widget.videoFiles[index]; // Changed _videos to widget.videoFiles
 
@@ -118,7 +165,10 @@ class _EditorScreenState extends State<EditorScreen> {
           
       // 4. Initialize Controller Async (Non-blocking) with Retry
       // Sometimes the file system or codec isn't immediately ready
-      var controller = VideoPlayerController.file(previewFile);
+      var controller = VideoPlayerController.file(
+        previewFile,
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+      );
       _videoController = controller;
       
       // Cache it
@@ -211,18 +261,25 @@ class _EditorScreenState extends State<EditorScreen> {
       if (!mounted) return;
       
       setState(() {
-        _videoError = null;
+      _videoError = null;
       });
       
       controller.setLooping(true);
-      controller.play();
-      
-      // Restore transform
-      if (_videoSettings[index].transform != null) {
-        _transformController.value = _videoSettings[index].transform!;
-      } else {
-        _transformController.value = Matrix4.identity();
+      if (autoPlay) {
+        controller.play();
       }
+      
+      // Initialize Audio if selected
+      await _initAudio();
+      
+      // Sync Audio with Video
+      _syncAudioWithVideo();
+      
+      // Global Volume control
+      // controller.setVolume(_isMuted ? 0.0 : 1.0); // Moved to _updateAudioMix
+      _updateAudioMix();
+
+      // Note: Transform controller is global, so it persists across videos
 
       // 5. Load Metadata AFTER preview starts (Lazy Load)
       if (_videoSettings[index].metadata == null) {
@@ -234,6 +291,9 @@ class _EditorScreenState extends State<EditorScreen> {
           }
         });
       }
+      
+      // Listener for syncing
+     controller.addListener(_videoListener);
 
     } catch (e) {
       debugPrint("Error initializing video: $e");
@@ -243,6 +303,96 @@ class _EditorScreenState extends State<EditorScreen> {
         });
       }
     }
+  }
+
+  void _videoListener() {
+      if (_videoController == null || !_videoController!.value.isInitialized) return;
+      
+      final isPlaying = _videoController!.value.isPlaying;
+      final position = _videoController!.value.position;
+      final duration = _videoController!.value.duration;
+      
+      // Loop check
+      if (position >= duration) {
+           _audioPlayer.seek(Duration.zero);
+           if (isPlaying) _audioPlayer.resume();
+      }
+      
+      // Sync Play/Pause
+      if (isPlaying && _audioPlayer.state != PlayerState.playing && _isAudioLoaded && _audioMode != 'original') {
+          _audioPlayer.resume();
+      } else if (!isPlaying && _audioPlayer.state == PlayerState.playing) {
+          _audioPlayer.pause();
+      }
+      
+      // Sync Seek (Optional, but good for precision)
+      // We don't want to seek constantly as it causes audio glitching, 
+      // but if the drift is large (> 200ms), we sync.
+      // leaving out for now to avoid stutter, relied on play/pause sync
+  }
+
+  Future<void> _initAudio() async {
+      if (_audioPath == null) {
+          await _audioPlayer.stop();
+          _isAudioLoaded = false;
+          return;
+      }
+      
+      try {
+          await _audioPlayer.setSourceDeviceFile(_audioPath!);
+          await _audioPlayer.setReleaseMode(ReleaseMode.loop); // Loop audio
+          _isAudioLoaded = true;
+      } catch (e) {
+          debugPrint("Error loading audio: $e");
+          _isAudioLoaded = false;
+      }
+  }
+
+  void _syncAudioWithVideo() {
+     if (_videoController == null) return;
+     
+     if (_videoController!.value.isPlaying) {
+         if (_isAudioLoaded && _audioMode != 'original') _audioPlayer.resume();
+     } else {
+         _audioPlayer.pause();
+     }
+  }
+  
+  void _updateAudioMix() {
+      if (_videoController == null) return;
+
+      double videoVol = 1.0;
+      double audioVol = 1.0;
+      
+      if (_isMuted) {
+          videoVol = 0.0;
+          audioVol = 0.0;
+      } else {
+          switch (_audioMode) {
+              case 'mix':
+                  videoVol = 1.0;
+                  audioVol = 1.0;
+                  // Smart Fallback: if no audio, mix is just original
+                  break;
+              case 'background':
+                  videoVol = 0.0;
+                  audioVol = 1.0;
+                  break;
+              case 'original':
+                  videoVol = 1.0;
+                  audioVol = 0.0;
+                  break;
+          }
+      }
+      
+      _videoController!.setVolume(videoVol);
+      _audioPlayer.setVolume(audioVol);
+      
+      if (audioVol == 0.0) {
+          _audioPlayer.pause();
+      } else if (_videoController!.value.isPlaying && _isAudioLoaded && _audioPlayer.state != PlayerState.playing) {
+          _audioPlayer.resume();
+      }
   }
 
   Future<void> _changeVideo(int index) async {
@@ -260,6 +410,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _controllerCache.remove(_currentVideoIndex);
 
     if (oldController != null) {
+      oldController.removeListener(_videoListener); // Remove listener
       await oldController.dispose();
     }
     
@@ -271,15 +422,20 @@ class _EditorScreenState extends State<EditorScreen> {
     });
     
     // Initialize the new video
-    await _initPlayer(index: index);
+    await _initPlayer(index: index, autoPlay: true);
   }
 
 
 
   void _saveCurrentVideoState() {
-     _videoSettings[_currentVideoIndex].transform = _transformController.value;
-     _videoSettings[_currentVideoIndex].cropRect = _getPreciseCropRect();
-     _videoSettings[_currentVideoIndex].viewportSize = _viewportSize;
+     for (var setting in _videoSettings) {
+        setting.transform = _transformController.value;
+        setting.cropRect = _getPreciseCropRect();
+        setting.viewportSize = _viewportSize;
+        setting.audioPath = _audioPath;
+        setting.audioMode = _audioMode;
+        setting.isMuted = _isMuted;
+     }
   }
 
   // ... (existing methods)
@@ -456,6 +612,7 @@ class _EditorScreenState extends State<EditorScreen> {
     
     // Pause video to prevent audio leak during export
     _videoController?.pause();
+    _audioPlayer.pause();
 
     // Navigate to Export Screen with all data
     Navigator.push(
@@ -491,14 +648,17 @@ class _EditorScreenState extends State<EditorScreen> {
     }
     _controllerCache.clear();
     
+    _audioPlayer.dispose();
     _clipDurationController.dispose();
     _clipCountController.dispose();
     super.dispose();
   }
 
   Future<void> _pickAudio() async {
-    // Capture the parent context to use after the modal is closed
-    final parentContext = context;
+    // Pause players before opening modal/screen
+    _videoController?.pause();
+    _audioPlayer.pause();
+    setState(() {});
     
     showModalBottomSheet(
       context: context,
@@ -522,25 +682,16 @@ class _EditorScreenState extends State<EditorScreen> {
                 title: const Text("Pick Audio File", style: TextStyle(color: Colors.white)),
                 onTap: () async {
                   Navigator.pop(modalContext);
-                  FilePickerResult? result = await FilePicker.platform.pickFiles(
-                    type: FileType.audio,
+                  final res = await Navigator.push(
+                    context, 
+                    MaterialPageRoute(builder: (c) => const AudioPickerScreen())
                   );
-                  if (result != null) {
-                    final path = result.files.single.path!;
-                    final ext = path.split('.').last.toLowerCase();
-                    final validAudioExt = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'];
-                    
-                    if (!validAudioExt.contains(ext)) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(parentContext).showSnackBar(
-                        const SnackBar(content: Text("Error: Please select a valid audio file.")),
-                      );
-                      return;
-                    }
-
+                  if (res != null && res is String) {
                     setState(() {
-                      _audioPath = path;
+                      _audioPath = res;
                     });
+                    await _initAudio();
+                    _updateAudioMix();
                   }
                 },
               ),
@@ -550,43 +701,16 @@ class _EditorScreenState extends State<EditorScreen> {
                 subtitle: const Text("Use audio from another video", style: TextStyle(color: Colors.grey, fontSize: 12)),
                 onTap: () async {
                   Navigator.pop(modalContext);
-                  FilePickerResult? result = await FilePicker.platform.pickFiles(
-                    type: FileType.video,
+                  final res = await Navigator.push(
+                    context, 
+                    MaterialPageRoute(builder: (c) => const VideoAudioPickerScreen())
                   );
-                  if (result != null) {
-                    final videoPath = result.files.single.path!;
-                    final ext = videoPath.split('.').last.toLowerCase();
-                    final validVideoExt = ['mp4', 'mov', 'avi', 'mkv', 'webm'];
-                    
-                    if (!validVideoExt.contains(ext)) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(parentContext).showSnackBar(
-                        const SnackBar(content: Text("Error: Please select a valid video file.")),
-                      );
-                      return;
-                    }
-                    
-                    // Show loading on parent context
-                    if (mounted) {
-                       ScaffoldMessenger.of(parentContext).showSnackBar(
-                         const SnackBar(content: Text("Extracting audio...")),
-                       );
-                    }
-                    
-                    final audioPath = await FFMpegService.extractAudioFromVideo(videoPath);
-                    
-                    if (mounted) {
-                      if (audioPath != null) {
-                        setState(() {
-                          _audioPath = audioPath;
-                        });
-                        ScaffoldMessenger.of(parentContext).hideCurrentSnackBar();
-                      } else {
-                        ScaffoldMessenger.of(parentContext).showSnackBar(
-                          const SnackBar(content: Text("Failed to extract audio")),
-                        );
-                      }
-                    }
+                  if (res != null && res is String) {
+                    setState(() {
+                      _audioPath = res;
+                    });
+                    await _initAudio();
+                    _updateAudioMix();
                   }
                 },
               ),
@@ -630,17 +754,93 @@ class _EditorScreenState extends State<EditorScreen> {
               if (_videoController != null && _videoController!.value.isInitialized)
                 _buildTimeline(),
 
-              // 3.5 Video Selector (Batch Mode)
-              if (_videos.length > 1)
-                _buildVideoSelector(),
-
-              // 4. Bottom Toolbar (Controls)
+              // 4. Bottom Toolbar (4 Sections)
               _buildBottomToolbar(),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Widget _buildBottomToolbar() {
+    return Container(
+      color: Colors.black,
+      height: 240, // Reduced height as requested
+      child: Column(
+        children: [
+          Expanded(
+            child: IndexedStack(
+              index: _selectedTabIndex,
+              children: [
+                _buildVideoSelectionSection(),
+                _buildClipSettingsSection(),
+                _buildAudioSettingsSection(),
+                _buildRatioSection(),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Colors.white12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildTabItem(0, Icons.video_collection, "Videos"),
+              _buildTabItem(1, Icons.slow_motion_video, "Clips"),
+              _buildTabItem(2, Icons.music_note, "Audio"),
+              _buildTabItem(3, Icons.aspect_ratio, "Ratio"),
+            ],
+          ),
+          const SizedBox(height: 4),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVideoSelectionSection() {
+    return ListView.builder(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.all(16),
+      itemCount: _videos.length,
+      itemBuilder: (context, index) {
+        final isSelected = index == _currentVideoIndex;
+        return GestureDetector(
+          onTap: () => _changeVideo(index),
+          child: Container(
+            width: 80,
+            margin: const EdgeInsets.only(right: 12),
+            decoration: BoxDecoration(
+              border: Border.all(color: isSelected ? Colors.cyanAccent : Colors.white24, width: 2),
+              borderRadius: BorderRadius.circular(8),
+              color: Colors.grey[900],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                   if (_videoSettings[index].thumbnailPath != null)
+                     Image.file(File(_videoSettings[index].thumbnailPath!), fit: BoxFit.cover)
+                   else
+                     Center(child: Text("${index + 1}", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white))),
+                   
+                   if (isSelected) Container(color: Colors.cyanAccent.withValues(alpha: 0.3)),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildClipSettingsSection() {
+    return _buildEditControls(); // Reusing existing style
+  }
+
+
+
+  Widget _buildRatioSection() {
+    return _buildRatioControls(); // Reusing existing style withFit Width/Height
   }
 
   Widget _buildVideoSelector() {
@@ -684,8 +884,11 @@ class _EditorScreenState extends State<EditorScreen> {
 
   Widget _buildTopBar() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: Colors.black,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: const BoxDecoration(
+        color: Colors.black,
+        border: Border(bottom: BorderSide(color: Colors.white10, width: 0.5)),
+      ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -841,8 +1044,12 @@ class _EditorScreenState extends State<EditorScreen> {
               setState(() {
                 if (_videoController!.value.isPlaying) {
                   _videoController!.pause();
+                  _audioPlayer.pause();
                 } else {
                   _videoController!.play();
+                   if (_isAudioLoaded && _audioMode != 'original' && !_isMuted) {
+                       _audioPlayer.resume();
+                   }
                 }
               });
             },
@@ -854,11 +1061,32 @@ class _EditorScreenState extends State<EditorScreen> {
           ),
           Expanded(
             child: Slider(
-              value: position.inMilliseconds.toDouble(),
+              value: _draggedSliderValue ?? position.inMilliseconds.toDouble().clamp(0.0, duration.inMilliseconds.toDouble()),
               min: 0.0,
               max: duration.inMilliseconds.toDouble(),
               onChanged: (v) {
-                _videoController?.seekTo(Duration(milliseconds: v.toInt()));
+                setState(() {
+                  _draggedSliderValue = v;
+                });
+              },
+              onChangeEnd: (v) async {
+                  final newTime = Duration(milliseconds: v.toInt());
+                  await _videoController?.seekTo(newTime);
+                  
+                  if (_isAudioLoaded && _audioMode != 'original') {
+                      final audioDur = await _audioPlayer.getDuration();
+                      if (audioDur != null && audioDur.inMilliseconds > 0) {
+                          final audioPos = Duration(milliseconds: newTime.inMilliseconds % audioDur.inMilliseconds);
+                          await _audioPlayer.seek(audioPos);
+                          if (_videoController!.value.isPlaying) {
+                              await _audioPlayer.resume();
+                          }
+                      }
+                  }
+                  
+                  setState(() {
+                    _draggedSliderValue = null;
+                  });
               },
             ),
           ),
@@ -866,57 +1094,14 @@ class _EditorScreenState extends State<EditorScreen> {
             _formatDuration(duration),
             style: const TextStyle(color: Colors.white70, fontSize: 12),
           ),
-          IconButton(
-            icon: Icon(
-              (_videoController?.value.volume ?? 0) > 0 ? Icons.volume_up : Icons.volume_off,
-              color: Colors.white,
-              size: 20,
-            ),
-            onPressed: () {
-              bool isMuted = _videoController?.value.volume == 0;
-              _videoController?.setVolume(isMuted ? 1.0 : 0.0).then((_) {
-                setState(() {});
-              });
-            },
-          ),
+          const SizedBox(width: 12),
           const SizedBox(width: 12),
         ],
       ),
     );
   }
 
-  Widget _buildBottomToolbar() {
-    return Container(
-      color: const Color(0xFF000000),
-      height: 280, // Increased height for controls
-      child: Column(
-        children: [
-          // Toolbar Actions Area
-          Expanded(
-            child: _selectedTabIndex == 0 
-                ? _buildEditControls()
-                : _selectedTabIndex == 1 
-                    ? _buildAudioControls()
-                    : _buildRatioControls(),
-          ),
-          
-          const Divider(height: 1, color: Colors.white12),
-          
-          // Bottom Navigation Tabs
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildTabItem(0, Icons.cut, "Edit"),
-              _buildTabItem(1, Icons.music_note, "Audio"),
-              _buildTabItem(2, Icons.aspect_ratio, "Ratio"),
-            ],
-          ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-  
+
   Widget _buildTabItem(int index, IconData icon, String label) {
     final isSelected = _selectedTabIndex == index;
     return GestureDetector(
@@ -1029,62 +1214,137 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  Widget _buildAudioControls() {
+  Widget _buildAudioSettingsSection() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(color: Colors.grey[800], borderRadius: BorderRadius.circular(8)),
-            child: const Icon(Icons.music_note, color: Colors.white),
+        // 1. Audio Selection
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.grey[900],
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white10),
           ),
-          title: Text(
-            _audioPath == null ? "Tap to Select Music" : _audioPath!.split('/').last,
-            style: const TextStyle(color: Colors.white),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+               const Text("Background Music", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+               const SizedBox(height: 12),
+               Row(
+                 children: [
+                   Expanded(
+                     child: GestureDetector(
+                       onTap: _pickAudio,
+                       child: Container(
+                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                         decoration: BoxDecoration(
+                           color: Colors.grey[800],
+                           borderRadius: BorderRadius.circular(8),
+                         ),
+                         child: Row(
+                           children: [
+                             const Icon(Icons.music_note, color: Colors.cyanAccent, size: 20),
+                             const SizedBox(width: 8),
+                             Expanded(
+                               child: Text(
+                                 _audioPath == null ? "Select Music" : _audioPath!.split('/').last,
+                                 style: const TextStyle(color: Colors.white, fontSize: 13),
+                                 overflow: TextOverflow.ellipsis,
+                               ),
+                             ),
+                             if (_audioPath != null)
+                                GestureDetector(
+                                  onTap: () {
+                                     setState(() {
+                                        _audioPath = null;
+                                        _isAudioLoaded = false;
+                                     });
+                                     _audioPlayer.stop();
+                                     _updateAudioMix();
+                                  },
+                                  child: const Icon(Icons.close, color: Colors.grey, size: 18),
+                                ),
+                           ],
+                         ),
+                       ),
+                     ),
+                   ),
+                 ],
+               ),
+            ],
           ),
-          subtitle: Text(_audioPath == null ? "No background audio" : "Audio selected", style: const TextStyle(color: Colors.grey)),
-          onTap: _pickAudio,
-          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
         ),
-        const Divider(color: Colors.white12),
-        const Text("Mix Mode", style: TextStyle(color: Colors.grey, fontSize: 12)),
-        const SizedBox(height: 8),
-        Row(
+        
+        const SizedBox(height: 20),
+        
+        // 2. Audio Mode Buttons (Grid Layout)
+        const Text("Audio Mode", style: TextStyle(color: Colors.grey, fontSize: 12)),
+        const SizedBox(height: 10),
+        
+        Column(
           children: [
-            _buildMixModeBtn("Mix", "mix"),
-            const SizedBox(width: 10),
-            _buildMixModeBtn("BG Only", "background"),
-            const SizedBox(width: 10),
-            _buildMixModeBtn("Original", "original"),
+            Row(
+              children: [
+                Expanded(child: _buildAudioModeButton("Mix Both", "mix", Icons.merge_type)),
+                const SizedBox(width: 12),
+                Expanded(child: _buildAudioModeButton("Music Only", "background", Icons.music_note)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(child: _buildAudioModeButton("Video Only", "original", Icons.videocam)),
+                const SizedBox(width: 12),
+                Expanded(child: _buildAudioModeButton("Muted", "mute_all", Icons.volume_off)),
+              ],
+            ),
           ],
         ),
       ],
     );
   }
 
-  Widget _buildMixModeBtn(String label, String value) {
-    final isSelected = _audioMode == value;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => _audioMode = value),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          decoration: BoxDecoration(
-            color: isSelected ? Colors.cyanAccent.withValues(alpha: 0.2) : Colors.grey[800],
-            border: Border.all(color: isSelected ? Colors.cyanAccent : Colors.transparent),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            label, 
-            style: TextStyle(
-              color: isSelected ? Colors.cyanAccent : Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 12,
+  Widget _buildAudioModeButton(String label, String value, IconData icon) {
+    bool isSelected;
+    if (value == 'mute_all') {
+      isSelected = _isMuted;
+    } else {
+      isSelected = !_isMuted && _audioMode == value;
+    }
+
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          if (value == 'mute_all') {
+            _isMuted = true;
+          } else {
+            _isMuted = false;
+            _audioMode = value;
+          }
+           _updateAudioMix();
+        });
+      },
+      child: Container(
+        height: 50,
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.cyanAccent : Colors.grey[800],
+          borderRadius: BorderRadius.circular(30),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: isSelected ? Colors.black : Colors.white, size: 20),
+            const SizedBox(width: 8),
+            Text(
+              label, 
+              style: TextStyle(
+                color: isSelected ? Colors.black : Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );

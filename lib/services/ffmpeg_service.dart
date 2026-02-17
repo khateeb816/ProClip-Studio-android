@@ -16,10 +16,6 @@ class FFMpegService {
   static bool _isCancelled = false;
   static bool get isCancelled => _isCancelled;
 
-  
-  static bool _isSnapdragon = false;
-  static bool get isSnapdragon => _isSnapdragon;
-
   static Future<void> init() async {
     // Disable logs for speed
     FFmpegKitConfig.enableLogCallback((log) {}); 
@@ -27,9 +23,17 @@ class FFMpegService {
     
     // Clear previous sessions to free memory
     await FFmpegKit.cancel();
-    
-    // Detect Capabilities
-    await _checkDeviceCapabilities();
+  }
+  
+  /// Cancel all running FFmpeg jobs
+  static Future<void> cancelAllJobs() async {
+    _isCancelled = true;
+    await FFmpegKit.cancel();
+  }
+  
+  /// Reset cancellation flag
+  static void resetCancellation() {
+    _isCancelled = false;
   }
 
   /// CRITICAL: File Integrity Validation
@@ -71,63 +75,50 @@ class FFMpegService {
     }
   }
   
-  /// Software Fallback with Retry
-  static Future<String?> _softwareFallbackWithRetry(
-    String inputPath,
-    String outputPath,
-    double start,
-    double duration,
-    Rect? cropRect,
-    int targetHeight,
-    int? targetWidth, // Added
-    String? audioPath,
-  ) async {
-    print("⚠️ CRITICAL: Hardware encoding produced invalid output. Retrying with software encoder...");
-    
-    // Delete corrupted file
+  /// Extract audio from video file
+  static Future<String?> extractAudioFromVideo(String videoPath) async {
     try {
-      final corruptedFile = File(outputPath);
-      if (await corruptedFile.exists()) {
-        await corruptedFile.delete();
-        print("🗑️ Deleted corrupted output");
+      final dir = await getExternalStorageDirectory();
+      final outDir = dir ?? await getApplicationDocumentsDirectory();
+      final outPath = "${outDir.path}/extracted_${DateTime.now().millisecondsSinceEpoch}.aac";
+
+      final cmd = [
+        "-y",
+        "-i", videoPath,
+        "-vn", // No video
+        "-acodec", "copy", // Try to copy stream first
+        outPath
+      ];
+
+      print("🚀 Extracting Audio (Copy): ${cmd.join(' ')}");
+      final session = await FFmpegKit.executeWithArguments(cmd);
+      if (ReturnCode.isSuccess(await session.getReturnCode())) {
+        return outPath;
+      }
+
+      // Fallback to re-encoding if copy fails
+      final retryCmd = [
+        "-y",
+        "-i", videoPath,
+        "-vn",
+        "-ac", "2",
+        "-ar", "44100",
+        "-ab", "128k",
+        "-acodec", "aac",
+        outPath
+      ];
+      print("🚀 Extracting Audio (Encode): ${retryCmd.join(' ')}");
+      final retrySession = await FFmpegKit.executeWithArguments(retryCmd);
+      if (ReturnCode.isSuccess(await retrySession.getReturnCode())) {
+        return outPath;
       }
     } catch (e) {
-      print("Warning: Could not delete corrupted file: $e");
+      print("❌ Audio Extraction Failed: $e");
     }
-    
-    return executeSoftwareFallback(
-      inputPath: inputPath,
-      outputPath: outputPath,
-      start: start,
-      duration: duration,
-      cropRect: cropRect,
-      targetHeight: targetHeight,
-      targetWidth: targetWidth,
-      audioPath: audioPath,
-    );
+    return null;
   }
 
-  static Future<void> _checkDeviceCapabilities() async {
-     try {
-       if (Platform.isAndroid) {
-         final deviceInfo = DeviceInfoPlugin();
-         final androidInfo = await deviceInfo.androidInfo;
-         final board = androidInfo.board.toLowerCase();
-         final hardware = androidInfo.hardware.toLowerCase();
-         
-         // Snapdragon Detection
-         if (board.contains("sm7150") || hardware.contains("sm7150")) {
-            _isSnapdragon = true;
-            print("🚀 Snapdragon 732/732G Detected! Applying Adreno 618 optimizations.");
-         } else if (hardware.contains("qcom") || board.contains("trinket") || board.contains("lito") || board.contains("bengal")) {
-            _isSnapdragon = true;
-            print("🚀 Qualcomm Snapdragon Detected.");
-         }
-       }
-     } catch (e) {
-       print("Device detection failed: $e");
-     }
-  }
+
 
   /// Explicitly release resources to prevent Android MediaServer death
   static Future<void> freeResources() async {
@@ -204,7 +195,7 @@ class FFMpegService {
     return null;
   }
   
-  /// 2. SMART SEQUENTIAL EXPORT (Zero Copy Optimized)
+  /// 2. SMART SEQUENTIAL EXPORT (Software Encoding)
   static Future<String?> executeSmartExport({
       required String inputPath,
       required String outputPath,
@@ -212,40 +203,20 @@ class FFMpegService {
       required double duration,
       required VideoSettings settings,
       required int outputHeight,
-      int? outputWidth, // Added
+      int? outputWidth,
   }) async {
       // 1. Capability & Metadata Check
       final meta = settings.metadata ?? await getVideoMetadata(inputPath);
-      final double srcFps = meta?.fps ?? 30.0;
       final int srcHeight = meta?.height ?? 720;
       
-      // VFR CHECK (Variable Frame Rate)
-      // If the video is VFR, Stream Copy often leads to audio desync.
-      // We force re-encode for VFR content to "Normalize" it to CFR.
-      // bool isVfr = false; // Unused
-      // We can hint VFR if avg_frame_rate != r_frame_rate, but for now
-      // safe assumption: simplistic check. If user says it's VFR, we trust?
-      // Actually, we'll assume most phone footage is VFR.
-      // PRO OPTIMIZATION: If we detect it's a "screen_recording" or has variable flag, disable copy.
-      // For now, let's trust the "SimpleCut" logic but add a safety check.
-      
-      // 2. Stream Copy Check
-      // Only possible if NO padding/scaling is needed (i.e. outputWidth/Height matches input or we don't care)
-      // BUT if we want padding (outputWidth != null), we CANNOT stream copy unless dimensions match exactly.
+      // 2. Stream Copy Check (Fast Path)
+      // Only possible if NO modifications needed
       final bool isSimpleCut = (settings.cropRect == null || settings.cropRect == const Rect.fromLTWH(0,0,1,1)) &&
                                (settings.audioPath == null) && 
                                (settings.transform == null) &&
-                               (outputWidth == null); // Disable stream copy if padding is requested
+                               (outputWidth == null);
 
-      // KEYFRAME ALIGNMENT SAFETY:
-      // Stream copy cuts at NEAREST keyframe. If user wants precise cut at 3.27s
-      // and keyframe is at 0.0s, the video will start at 0.0s but say 3.27s (frozen/glitch).
-      // TRUE PROFESSIONAL FIX:
-      // We can only stream copy if start time is 0.0 OR if we accept "loose" trims.
-      // Apps like CapCut force re-encode for precise mid-GOP trims.
-      // We will allow stream copy ONLY if starting from 0.0 OR if user accepts rough cut.
-      // For this "Speed" mode, we prioritize speed, but let's be safe.
-      
+      // Stream copy ONLY if starting from 0.0 for keyframe alignment
       if (isSimpleCut && start == 0.0) {
           final result = await executeStreamCopy(
              inputPath: inputPath, 
@@ -256,213 +227,28 @@ class FFMpegService {
           if (result != null) return result;
       }
       
-      // 3. Hardware Encode (The "Zero Copy" Path)
+      // 3. Software Re-Encode (libx264)
       int targetH = outputHeight;
       if (srcHeight < targetH) targetH = srcHeight;
       
-      // CRITICAL: MOD-16 ALIGNMENT for MediaCodec stability
-      targetH = _alignToMod16(targetH); 
-      
-      // Only use outputWidth if it stays reasonably close to targetH aspect ratio? 
-      // No, we trust Caller.
+      // MOD-16 ALIGNMENT for encoder stability
+      targetH = _alignToMod16(targetH);
 
-      return await executeHardwareExport(
+      return await executeSoftwareFallback(
           inputPath: inputPath,
           outputPath: outputPath,
           start: start,
           duration: duration,
           cropRect: settings.cropRect,
           targetHeight: targetH,
-          targetWidth: outputWidth, // Pass it
-          targetFps: srcFps, 
-          srcHeight: srcHeight,
+          targetWidth: outputWidth,
           audioPath: settings.audioPath,
           audioMode: settings.audioMode,
+          isMuted: settings.audioMode == null && settings.audioPath == null, // Fallback muting logic if needed
       );
   }
 
-  /// 3. HARDWARE ACCELERATED RE-ENCODE
-  static Future<String?> executeHardwareExport({
-    required String inputPath,
-    required String outputPath,
-    required double start,
-    required double duration,
-    Rect? cropRect,
-    int targetHeight = 1280,
-    int? targetWidth, // Added for Padding
-    double? targetFps,
-    int? srcHeight, 
-    String? audioPath,
-    String audioMode = "mix",
-  }) async {
-     List<String> cmd = ["-y"];
-     
-     // CORRUPTION PREVENTION: Strict error detection
-     cmd.addAll(["-err_detect", "aggressive"]);
-
-     // Hardware Acceleration Flags (Android)
-     // CRITICAL FIX: Remove -hwaccel mediacodec (causes crashes on many Snapdragons when filtering)
-     // keeping it OFF is safer for compatibility. MediaCodec ENCODER is still used.
-     // if (Platform.isAndroid) {
-     //    cmd.addAll([
-     //      "-hwaccel", "mediacodec",
-     //    ]);
-     // }
-
-     // Input Seeking (Fast) -> Before -i
-     cmd.addAll([
-        "-ss", start.toStringAsFixed(3),
-        "-i", inputPath,
-        "-t", duration.toStringAsFixed(3)
-     ]);
-     
-     // Audio Input
-     if (audioPath != null && audioMode != "audio_only") {
-        cmd.addAll(["-i", audioPath]); 
-     }
-
-     // CRITICAL: Calculate integer crop dimensions BEFORE building filter
-     // This prevents floating-point precision errors that cause MOD-16 violations
-     int? cropW, cropH, cropX, cropY;
-     if (cropRect != null && cropRect != const Rect.fromLTWH(0,0,1,1) && srcHeight != null) {
-        // Assume source width based on aspect ratio (most videos are 16:9)
-        int srcWidth = ((srcHeight * 16) / 9).round();
-        
-        cropW = (srcWidth * cropRect.width).round();
-        cropH = (srcHeight * cropRect.height).round();
-        cropX = (srcWidth * cropRect.left).round();
-        cropY = (srcHeight * cropRect.top).round();
-        
-        // Ensure crop output is MOD-16 aligned
-        cropW = _alignToMod16(cropW);
-        cropH = _alignToMod16(cropH);
-     }
-     
-     // Filters Check (CRITICAL ORDER: crop → scale → pad)
-     String vf = "";
-     
-     // 1. Crop FIRST (if needed)
-     if (cropW != null && cropH != null && cropX != null && cropY != null) {
-        vf += "crop=$cropW:$cropH:$cropX:$cropY";
-     }
-     
-     // 2. Scale & Pad (ensures MOD-16 output and aspect ratio)
-     int alignedHeight = _alignToMod16(targetHeight);
-     
-     if (targetWidth != null) {
-         // WITH PADDING (Fit logic)
-         int alignedWidth = _alignToMod16(targetWidth);
-         
-         // Add comma if filter chain exists
-         if (vf.isNotEmpty) vf += ",";
-         
-         // Scale to fit within box (decrease means don't upscale if already smaller? No, we want to fit)
-         // using force_original_aspect_ratio=decrease ensures it fits inside the box
-         vf += "scale=$alignedWidth:$alignedHeight:force_original_aspect_ratio=decrease";
-         
-         // Pad to fill the box (Black bars)
-         // (ow-iw)/2 centers it.
-         vf += ",pad=$alignedWidth:$alignedHeight:(ow-iw)/2:(oh-ih)/2:color=black";
-         
-     } else {
-         // STANDARD SCALING (Fit Height, Variable Width)
-         if (vf.isNotEmpty) {
-            vf += ",scale=-2:$alignedHeight";
-         } else {
-            vf += "scale=-2:$alignedHeight";
-         }
-     }
-
-     if (vf.isNotEmpty) {
-        cmd.addAll(["-vf", vf]);
-     }
-     
-     // Audio Map
-     if (audioPath != null && audioMode == "mix") {
-         cmd.addAll(["-filter_complex", "amix=inputs=2:duration=first", "-map", "0:v", "-map", "0:a"]);
-     }
-
-     // SNAPDRAGON OPTIMIZATION
-     String encoder = Platform.isAndroid ? "h264_mediacodec" : "h264_videotoolbox";
-     
-     // FPS Enforce (Default 30 FPS for 720p 30fps recording)
-     double finalFps = targetFps ?? 30.0;
-     cmd.addAll(["-r", finalFps.toString()]); // Enforce CFR
-     cmd.addAll(["-vsync", "cfr"]); // VFR -> CFR Normalization (Prevents Audio Drift)
-     
-     // CRITICAL: Force pixel format for MediaCodec compatibility
-     cmd.addAll(["-pix_fmt", "yuv420p"]);
-     
-     cmd.addAll(["-c:v", encoder]);
-
-     if (_isSnapdragon) {
-         // --- SNAPDRAGON SPECIFIC TUNING ---
-         // ULTRA-SAFE BITRATES - CORRUPTION PREVENTION PRIORITY
-         // Reduced bitrates slightly for 1080p to ensure Level compatibility
-         int bitrate = alignedHeight >= 1080 ? 5500000 : // Dropped from 6M
-                       alignedHeight >= 720 ? 4000000 : 2000000;
-         
-         // CORRUPTION PREVENTION: VERY SHORT GOP
-         int gopSize = finalFps.toInt(); // 30 frames @ 30fps = 1 second
-         
-         cmd.addAll([
-             "-b:v", "$bitrate", 
-             "-maxrate", "${(bitrate * 1.2).toInt()}", // Conservative 20% burst
-             "-bufsize", "${(bitrate * 1.5).toInt()}", // Reduced buffer for stability
-             "-profile:v", "main", // CHANGED FROM HIGH -> MAIN for compatibility
-             "-bf", "0", // DISABLE B-FRAMES for stability on Adreno 618
-             "-g", "$gopSize", // GOP size limit (keyframe every 1 second)
-             "-keyint_min", "${(gopSize ~/ 2)}", // Minimum keyframe interval
-         ]);
-     } else {
-         // Generic
-         cmd.addAll(["-b:v", "3000k"]); // Bumped slightly for generic
-     }
-
-     // Audio settings
-     cmd.addAll([
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
-        outputPath
-     ]);
-     
-     print("🚀 Smart HW Export (Snapdragon=$_isSnapdragon): ${cmd.join(' ')}");
-     
-     try {
-       final session = await FFmpegKit.executeWithArguments(cmd);
-       
-       if (ReturnCode.isSuccess(await session.getReturnCode())) {
-           // CRITICAL: STRICT DOUBLE VALIDATION
-           print("✓ FFmpeg succeeded. Running DOUBLE validation...");
-           
-           // Validation 1: Duration and stream check
-           final validated1 = await _validateOutput(outputPath, checkDuration: true, expectedDuration: duration);
-           if (validated1 == null) {
-               print("❌ VALIDATION 1 FAILED: Duration/Stream check failed");
-               return await _softwareFallbackWithRetry(inputPath, outputPath, start, duration, cropRect, targetHeight, targetWidth, audioPath);
-           }
-           
-           // Validation 2: File integrity and playability
-           final validated2 = await _validateFileIntegrity(outputPath);
-           if (!validated2) {
-               print("❌ VALIDATION 2 FAILED: File integrity check failed");
-               return await _softwareFallbackWithRetry(inputPath, outputPath, start, duration, cropRect, targetHeight, targetWidth, audioPath);
-           }
-           
-           print("✅ DOUBLE VALIDATION PASSED - Video is SAFE");
-           await saveToGallery(outputPath);
-           return outputPath;
-       } else {
-           print("❌ HW Export Failed. Logs: ${await session.getAllLogsAsString()}");
-       }
-     } catch (e) {
-       print("❌ Critical FFmpeg Exception: $e. Triggering Fallback.");
-     }
-     
-     // Fallback to Software
-     return await _softwareFallbackWithRetry(inputPath, outputPath, start, duration, cropRect, targetHeight, targetWidth, audioPath);
-  }
+  /// 3. SOFTWARE ENCODER (libx264)
 
   static Future<String?> _validateOutput(String path, {bool checkDuration = false, double? expectedDuration}) async {
      final file = File(path);
@@ -510,7 +296,6 @@ class FFMpegService {
   }
 
 
-  /// 3. FALLBACK: Ultrafast Software
   static Future<String?> executeSoftwareFallback({
     required String inputPath,
     required String outputPath,
@@ -518,21 +303,25 @@ class FFMpegService {
     required double duration,
     Rect? cropRect,
     int targetHeight = 1280,
-    int? targetWidth, // Added for Padding
+    int? targetWidth,
     String? audioPath,
+    String? audioMode, // mix, background, original
+    bool isMuted = false,
   }) async {
       List<String> cmd = [
         "-y",
         "-ss", start.toStringAsFixed(3),
         "-i", inputPath,
-        "-t", duration.toStringAsFixed(3)
       ];
-      
-      if (audioPath != null) cmd.addAll(["-i", audioPath]);
+
+      if (audioPath != null) {
+        cmd.addAll(["-i", audioPath]);
+      }
+
+      cmd.addAll(["-t", duration.toStringAsFixed(3)]);
 
       String vf = "";
-      // Crop First (if needed) - Simplified for software as we don't need strictly MOD-16 here as much, but nice to have.
-      // We assume simple crop string here or we can reuse the logic.
+      // Crop First (if needed)
       if (cropRect != null && cropRect != const Rect.fromLTWH(0,0,1,1)) {
          vf += "crop=iw*${cropRect.width}:ih*${cropRect.height}:iw*${cropRect.left}:ih*${cropRect.top}";
       }
@@ -550,13 +339,42 @@ class FFMpegService {
 
       cmd.addAll(["-vf", vf]);
 
+      // Audio Logic
+      if (isMuted || (audioMode == "background" && audioPath == null)) {
+         cmd.addAll(["-an"]); 
+      } else {
+         if (audioPath != null && (audioMode == "mix" || audioMode == "background")) {
+             if (audioMode == "mix") {
+                cmd.addAll([
+                  "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first[a]",
+                  "-map", "0:v",
+                  "-map", "[a]"
+                ]);
+             } else {
+                cmd.addAll([
+                  "-map", "0:v",
+                  "-map", "1:a",
+                  "-shortest"
+                ]);
+             }
+         } else {
+             cmd.addAll(["-map", "0:v", "-map", "0:a"]);
+         }
+      }
+
+      // SOFTWARE ENCODER (libx264)
       cmd.addAll([
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "35", // Lower quality for speed
+        "-preset", "faster",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
         "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
         outputPath
       ]);
+
+      print("🔧 Software Encode (libx264): ${cmd.join(' ')}");
 
       final session = await FFmpegKit.executeWithArguments(cmd);
       if (ReturnCode.isSuccess(await session.getReturnCode())) {
@@ -569,7 +387,7 @@ class FFMpegService {
       return null;
   }
   
-  /// MOD-16 ALIGNMENT HELPER (Critical for MediaCodec Stability)
+  /// MOD-16 ALIGNMENT HELPER (Critical for Encoder Stability)
   static int _alignToMod16(int dimension) {
     return (dimension ~/ 16) * 16;
   }
@@ -695,15 +513,5 @@ class FFMpegService {
   static void cancelExport() {
     _isCancelled = true;
     FFmpegKit.cancel();
-  }
-  static void resetCancellation() {
-     _isCancelled = false;
-  }
-  
-  static Future<String?> extractAudioFromVideo(String videoPath) async {
-      // Stub for legacy compat if needed, or remove if unused. 
-      // Keeping it simple for now as we removed preload logic that used it?
-      // Actually it was used in Editor. We'll leave a stub or reimplement if needed.
-      return null; 
   }
 }

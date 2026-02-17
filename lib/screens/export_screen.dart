@@ -5,7 +5,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/ffmpeg_service.dart';
-import '../services/titanium_service.dart';
 import '../services/notification_service.dart';
 import '../models/video_settings.dart';
 
@@ -49,7 +48,6 @@ class _ExportScreenState extends State<ExportScreen> {
   int _totalClipsForCurrentVideo = 0;
   double _currentVideoProgress = 0.0;
   double _currentClipProgress = 0.0;
-  bool _isProcessing = false;
   bool _isComplete = false;
   
   // Replaced VideoPlayer with Thumbnail File
@@ -60,24 +58,6 @@ class _ExportScreenState extends State<ExportScreen> {
     super.initState();
     WakelockPlus.enable();
     FFMpegService.resetCancellation();
-    
-    // Listen to Native Engine Progress
-    TitaniumService.onProgress.listen((progress) {
-       print("📊 Progress Event Received: $progress"); // DEBUG
-       if (mounted && _isProcessing) {
-          setState(() {
-             _currentClipProgress = progress;
-          });
-          
-          // Update notification with current progress
-          final overallProgress = ((_currentVideoIndex + progress) / widget.videoFiles.length * 100).toInt();
-          NotificationService.showProgress(
-            overallProgress,
-            message: "V${_currentVideoIndex + 1}: Clip $_currentClipIndex/$_totalClipsForCurrentVideo (${(progress * 100).toInt()}%)"
-          );
-       }
-    });
-
     _startBatchPipeline();
   }
   
@@ -111,7 +91,6 @@ class _ExportScreenState extends State<ExportScreen> {
     } catch (_) {}
     
     // ALWAYS use app internal directory for FFmpeg generation (Safe from Scoped Storage)
-    final docDir = await getApplicationDocumentsDirectory();
     final tempDir = await getTemporaryDirectory();
     final workBaseDir = tempDir.path;
 
@@ -119,7 +98,6 @@ class _ExportScreenState extends State<ExportScreen> {
     print("📂 Work Dir: $workBaseDir");
     print("📂 Target Custom Dir: $customPath");
     
-    int successCount = 0;
     int failCount = 0;
 
     for (int i = 0; i < widget.videoFiles.length; i++) {
@@ -130,7 +108,6 @@ class _ExportScreenState extends State<ExportScreen> {
         
         setState(() {
           _currentVideoIndex = i;
-          _isProcessing = true;
           _currentVideoProgress = 0.0;
           _currentClipIndex = 0;
           _currentThumbnail = null;
@@ -219,77 +196,49 @@ class _ExportScreenState extends State<ExportScreen> {
                      // and let executeSmartExport derive it or just scale height.
                 }
 
-                // TITANIUM ENGINE (Native)
-                // Use Native if cropping is complex/custom
-                bool useNative = settings.cropRect != null && 
-                                 settings.cropRect != const Rect.fromLTWH(0,0,1,1) &&
-                                 settings.audioPath == null; 
-                                 
-                if (useNative) {
-                     print("🚀 Using Titanium Engine (Native)");
-                     
-                     // Fallback default width if original
-                     int nativeWidth = outWidth ?? (outHeight * 9/16).round();
-
-                     resultPath = await TitaniumService.export(
-                        sourcePath: file.path, 
-                        destPath: tempOutPath,
-                        config: {
-                          'cropX': settings.cropRect?.left ?? 0.0,
-                          'cropY': settings.cropRect?.top ?? 0.0,
-                          'cropW': settings.cropRect?.width ?? 1.0,
-                          'cropH': settings.cropRect?.height ?? 1.0,
-                          'width': nativeWidth,
-                          'height': outHeight,
-                        }
-                     );
-                }
-
-                // Fallback to FFmpeg Smart Export
-                if (resultPath == null) {
-                    print("⚠️ Fallback to FFmpeg Smart Export");
-                    
-                    bool exportComplete = false;
-                    final progressTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
-                      if (!mounted || exportComplete) {
-                        timer.cancel();
-                        return;
-                      }
-                      final elapsed = timer.tick * 200; 
-                      final estimatedDuration = duration * 1500; 
-                      final simulatedProgress = (elapsed / estimatedDuration).clamp(0.0, 0.95);
-                      
-                      setState(() {
-                        _currentClipProgress = simulatedProgress;
-                      });
-                      
-                      final overallProgress = ((_currentVideoIndex + simulatedProgress) / widget.videoFiles.length * 100).toInt();
-                      NotificationService.showProgress(
-                        overallProgress,
-                        message: "V${_currentVideoIndex + 1}: Clip $_currentClipIndex/$_totalClipsForCurrentVideo (${(simulatedProgress * 100).toInt()}%)"
-                      );
-                    });
-                    
-                    resultPath = await FFMpegService.executeSmartExport(
-                       inputPath: file.path, 
-                       outputPath: tempOutPath, 
-                       start: start, 
-                       duration: duration, 
-                       settings: settings, 
-                       outputHeight: widget.exportHeight,
-                       outputWidth: outWidth, // PASSING TARGET WIDTH TRIGGERS PADDING
-                    );
-                    
-                    exportComplete = true;
-                    progressTimer.cancel();
-                }
+                // FFmpeg Software Export
+                print("🔧 Using FFmpeg Software Encoding (libx264)");
+                
+                bool exportComplete = false;
+                final progressTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
+                  if (!mounted || exportComplete) {
+                    timer.cancel();
+                    return;
+                  }
+                  final elapsed = timer.tick * 200; 
+                  final estimatedDuration = duration * 1500; 
+                  final simulatedProgress = (elapsed / estimatedDuration).clamp(0.0, 0.95);
+                  
+                  setState(() {
+                    _currentClipProgress = simulatedProgress;
+                  });
+                  
+                  final currentClipProportion = (c + simulatedProgress) / plan.length;
+                  final overallProgressPercent = ((_currentVideoIndex + currentClipProportion) / widget.videoFiles.length * 100).toInt();
+                  
+                  NotificationService.showProgress(
+                    overallProgressPercent,
+                    message: "V${_currentVideoIndex + 1}: Clip $_currentClipIndex/$_totalClipsForCurrentVideo (${(simulatedProgress * 100).toInt()}%)"
+                  );
+                });
+                
+                resultPath = await FFMpegService.executeSmartExport(
+                   inputPath: file.path, 
+                   outputPath: tempOutPath, 
+                   start: start, 
+                   duration: duration, 
+                   settings: settings, 
+                   outputHeight: widget.exportHeight,
+                   outputWidth: outWidth, // PASSING TARGET WIDTH TRIGGERS PADDING
+                );
+                
+                exportComplete = true;
+                progressTimer.cancel();
                 return resultPath;
             });
 
             if (mounted && resultPath != null) {
                // SUCCESSFUL GENERATION
-               successCount++;
-               
                // NOTE: FFMpegService already saved to gallery internally
                // We only need to copy to custom path if specified
                
@@ -314,9 +263,10 @@ class _ExportScreenState extends State<ExportScreen> {
                   _currentVideoProgress = (c + 1) / plan.length;
                });
                
-               final overallProgress = ((_currentVideoIndex + 1.0) / widget.videoFiles.length * 100).toInt();
+               final currentVideoActualProgress = (c + 1.0) / plan.length;
+               final overallProgressPercent = ((_currentVideoIndex + currentVideoActualProgress) / widget.videoFiles.length * 100).toInt();
                NotificationService.showProgress(
-                 overallProgress,
+                 overallProgressPercent,
                  message: "V${_currentVideoIndex + 1}: Clip $_currentClipIndex/$_totalClipsForCurrentVideo (100%)"
                );
             } else {
@@ -327,11 +277,7 @@ class _ExportScreenState extends State<ExportScreen> {
 
         // STABILIZATION DELAY
         if (mounted) {
-           int delayMs = 500;
-           if (FFMpegService.isSnapdragon && plan.length > 5 && (plan.length) % 3 == 0) {
-              delayMs = 2000;
-           }
-           await Future.delayed(Duration(milliseconds: delayMs));
+           await Future.delayed(const Duration(milliseconds: 500));
         }
 
         if (i % 5 == 0) {
@@ -341,7 +287,6 @@ class _ExportScreenState extends State<ExportScreen> {
 
     if (mounted) {
       setState(() {
-        _isProcessing = false;
         _isComplete = true;
       });
       
@@ -366,11 +311,17 @@ class _ExportScreenState extends State<ExportScreen> {
              children: [
                 const Icon(Icons.check_circle, color: Colors.greenAccent, size: 80),
                 const SizedBox(height: 20),
-                const Text("Export Complete!", style: TextStyle(color: Colors.white, fontSize: 24)),
+                const Text("Export Complete!", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 40),
                 ElevatedButton(
                   onPressed: () => Navigator.of(context).popUntil((r) => r.isFirst),
-                  child: const Text("Done"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.cyanAccent,
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                  ),
+                  child: const Text("Done", style: TextStyle(fontWeight: FontWeight.bold)),
                 )
              ],
            ),
@@ -378,55 +329,108 @@ class _ExportScreenState extends State<ExportScreen> {
        );
     }
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      body: SafeArea(
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text("Exporting...", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 10),
-              Text("Processing Video ${_currentVideoIndex + 1} of ${widget.videoFiles.length}", style: const TextStyle(color: Colors.cyanAccent)),
-              const SizedBox(height: 40),
-              
-              // Thumbnail Container
-              Container(
-                width: 200, height: 200,
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.cyanAccent, width: 2),
-                  borderRadius: BorderRadius.circular(12),
-                  color: Colors.black,
+    // Circular Progress Value (Overall)
+    // Proportional progress within current video
+    double currentVideoProportion = 0.0;
+    if (_totalClipsForCurrentVideo > 0) {
+      currentVideoProportion = (_currentClipIndex - 1 + _currentClipProgress) / _totalClipsForCurrentVideo;
+    }
+    
+    // Total progress across all videos
+    final double overallProgress = (_currentVideoIndex + currentVideoProportion) / widget.videoFiles.length;
+
+    return WillPopScope(
+      onWillPop: () async => false, // Prevent back button during export
+      child: Scaffold(
+        backgroundColor: const Color(0xFF121212),
+        body: SafeArea(
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Circular Progress with Thumbnail center
+                SizedBox(
+                  width: 240,
+                  height: 240,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      // Outer Progress Ring
+                      SizedBox(
+                        width: 240,
+                        height: 240,
+                        child: CircularProgressIndicator(
+                          value: overallProgress,
+                          strokeWidth: 10,
+                          backgroundColor: Colors.white10,
+                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.cyanAccent),
+                        ),
+                      ),
+                      
+                      // Inner Thumbnail
+                      Container(
+                        width: 180,
+                        height: 180,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white24, width: 2),
+                          color: Colors.black,
+                        ),
+                        child: ClipOval(
+                          child: _currentThumbnail != null 
+                              ? Image.file(_currentThumbnail!, fit: BoxFit.cover)
+                              : const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                        ),
+                      ),
+                      
+                      // Percentage Overlay
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          "${(overallProgress * 100).toInt()}%",
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                child: _currentThumbnail != null 
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: Image.file(_currentThumbnail!, fit: BoxFit.cover),
-                      )
-                    : const Center(child: CircularProgressIndicator()),
-              ),
-              
-              const SizedBox(height: 40),
-              
-              // Progress Bar
-              SizedBox(
-                 width: 200,
-                 child: Column(
-                   children: [
-                      LinearProgressIndicator(value: _currentClipProgress, color: Colors.deepOrangeAccent, backgroundColor: Colors.grey[800]),
-                      const SizedBox(height: 8),
-                      Text("Clip $_currentClipIndex / $_totalClipsForCurrentVideo", style: const TextStyle(color: Colors.white70)),
-                   ],
-                 )
-              ),
-              
-              const SizedBox(height: 40),
-              ElevatedButton(
-                onPressed: _cancelExport,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red.withValues(alpha: 0.2)),
-                child: const Text("Cancel", style: TextStyle(color: Colors.red)),
-              )
-            ],
+                
+                const SizedBox(height: 48),
+                
+                Text(
+                  "Processing Video ${_currentVideoIndex + 1} of ${widget.videoFiles.length}",
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  "Clip $_currentClipIndex of $_totalClipsForCurrentVideo",
+                  style: const TextStyle(color: Colors.grey, fontSize: 14),
+                ),
+                
+                const SizedBox(height: 60),
+                
+                ElevatedButton.icon(
+                  onPressed: _cancelExport,
+                  icon: const Icon(Icons.close),
+                  label: const Text("Cancel Export"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent.withValues(alpha: 0.1),
+                    foregroundColor: Colors.redAccent,
+                    side: const BorderSide(color: Colors.redAccent),
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                  ),
+                )
+              ],
+            ),
           ),
         ),
       ),

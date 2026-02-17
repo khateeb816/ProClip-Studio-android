@@ -7,7 +7,7 @@ import 'package:device_info_plus/device_info_plus.dart';
       // Preload service removed
 
 import '../services/video_cache_manager.dart';
-import 'editor_screen.dart';
+import 'editor_screen.dart'; // Import EditorScreen
 
 class MediaPickerScreen extends StatefulWidget {
   const MediaPickerScreen({super.key});

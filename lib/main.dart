@@ -3,7 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'screens/splash_screen.dart';
 import 'services/notification_service.dart';
 import 'services/ffmpeg_service.dart';
-import 'services/titanium_service.dart';
+
 import 'services/background_service.dart';
 
 void main() async {
@@ -13,7 +13,6 @@ void main() async {
     debugPrint("🚀 Starting App Initialization...");
     await NotificationService.init();
     await FFMpegService.init(); // Initialize FFMpeg Config
-    await TitaniumService.init(); // Initialize Native Engine
     await BackgroundService.initializeService(); // Initialize Background Service
     debugPrint("✅ Initialization Complete");
   } catch (e, stack) {

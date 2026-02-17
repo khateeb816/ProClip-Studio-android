@@ -4,6 +4,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
 import 'dart:async';
 import '../services/video_cache_manager.dart';
+import '../services/audio_cache_manager.dart';
 import 'home_screen.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 
@@ -56,12 +57,22 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
             
             // Request multiple permissions for Android 13+
             Map<Permission, PermissionStatus> statuses = await [
-              Permission.videos,
-              Permission.photos,
+               Permission.videos,
+               Permission.photos,
+               Permission.audio,
             ].request();
             
-            if (statuses[Permission.videos]?.isGranted == true || statuses[Permission.photos]?.isGranted == true) {
+            if (statuses[Permission.videos]?.isGranted == true && 
+                statuses[Permission.photos]?.isGranted == true &&
+                statuses[Permission.audio]?.isGranted == true) {
                permissionGranted = true;
+            } else {
+               // Detail which ones failed for debugging/user info
+               final denied = statuses.entries
+                 .where((e) => !e.value.isGranted)
+                 .map((e) => e.key.toString().split('.').last)
+                 .join(", ");
+               debugPrint("❌ Missing permissions: $denied");
             }
          } else {
             if (mounted) setState(() => _statusMessage = "Requesting Storage...");
@@ -91,13 +102,20 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
          return;
       }
 
-      // 2. Pre-load Videos
-      if (mounted) setState(() => _statusMessage = "Initializing Gallery...");
+      if (mounted) setState(() => _statusMessage = "Loading assets...");
       
       // Critical: Tell PhotoManager we already handled permissions to avoid double-check hang
       PhotoManager.setIgnorePermissionCheck(true);
       
-      await VideoCacheManager().init();
+      // Initialize both caches
+      await Future.wait([
+        VideoCacheManager().init(onProgress: (progress) {
+          if (mounted && progress < 1.0) {
+            setState(() => _statusMessage = "Loading videos... ${(progress * 100).toInt()}%");
+          }
+        }),
+        AudioCacheManager().init(),
+      ]);
       
       // 3. Navigate to Home
       if (mounted) {

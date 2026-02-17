@@ -6,7 +6,7 @@ class CapabilityService {
     return {
       "maxResolution": 1080,
       "maxFps": 60,
-      "encoder": "h264_mediacodec",
+      "encoder": "libx264",
       "tier": "high" 
     };
   }

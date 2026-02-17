@@ -63,11 +63,5 @@ class MainActivity: FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
-
-        // TITANIUM ENGINE BRIDGE
-        val engine = com.proclipstudio.pro_clip_studio.video.TitaniumEngine(context)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, com.proclipstudio.pro_clip_studio.video.TitaniumEngine.CHANNEL).setMethodCallHandler(engine)
-        
-        io.flutter.plugin.common.EventChannel(flutterEngine.dartExecutor.binaryMessenger, com.proclipstudio.pro_clip_studio.video.TitaniumEngine.EVENTS).setStreamHandler(engine)
     }
 }

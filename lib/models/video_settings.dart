@@ -19,6 +19,8 @@ class VideoSettings {
   // Audio (Added for Export Pipeline)
   String? audioPath;
   String audioMode = "mix";
+  bool isMuted = false;
+  String? thumbnailPath;
 
   VideoSettings({
     required this.videoPath,

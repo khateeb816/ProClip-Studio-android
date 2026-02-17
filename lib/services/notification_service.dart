@@ -79,4 +79,9 @@ class NotificationService {
   static Future<void> cancelAll() async {
     await _notifications.cancelAll();
   }
+  
+  /// Hide progress notification
+  static Future<void> hideProgress() async {
+    await _notifications.cancel(1); // Cancel the progress notification with ID 1
+  }
 }

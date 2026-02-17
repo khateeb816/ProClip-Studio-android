@@ -39,8 +39,7 @@ class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStat
   bool _platformTikTok = true;
   
   // Track if we're returning from a share action
-  bool _isReturningFromShare = false;
-  
+
   // Selection Mode
   bool _isSelectionMode = false;
   final Set<String> _selectedIds = {}; // Using IDs or Filenames
@@ -109,8 +108,7 @@ class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStat
       }
       
       // Always reset the share flag on resume
-      _isReturningFromShare = false;
-      
+
       // We DO NOT call _loadClips() here anymore. 
       // User wants manual refresh by swiping down.
     }
@@ -329,8 +327,7 @@ class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStat
     await FlutterBackgroundService().startService();
     
     // Set flag to prevent reload when returning from share
-    _isReturningFromShare = true;
-    
+
     // Save pending upload to SharedPreferences for persistence across app restarts
     _pendingUploadFile = path;
     _pendingUploadPlatform = platform;
@@ -558,10 +555,11 @@ class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStat
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    _showingArchived ? "Archived Clips" : "Dashboard", 
-                    style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)
-                  ),
+                  if (_selectedIds.isEmpty)
+                    Text(
+                      _showingArchived ? "Archived Clips" : "Dashboard", 
+                      style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)
+                    ),
                   Row(
                     children: [
                       // SELECTION MODE CONTROLS
@@ -706,17 +704,6 @@ class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStat
     );
   }
 
-  String _formatDuration(Duration duration) {
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final hours = duration.inHours;
-    final minutes = duration.inMinutes.remainder(60);
-    final seconds = duration.inSeconds.remainder(60);
-    
-    if (hours > 0) {
-      return "$hours:${twoDigits(minutes)}:${twoDigits(seconds)}";
-    }
-    return "${twoDigits(minutes)}:${twoDigits(seconds)}";
-  }
 
   Widget _buildStatCard(String label, String value, Color color) {
     return Expanded(
@@ -955,7 +942,6 @@ class _ClipTileState extends State<ClipTile> with AutomaticKeepAliveClientMixin 
                 ),
 
               // SERIAL NUMBER
-              if (!widget.isSelectionMode)
                 Container(
                   width: 32,
                   alignment: Alignment.center,
