@@ -49,6 +49,7 @@ class _ExportScreenState extends State<ExportScreen> {
   double _currentVideoProgress = 0.0;
   double _currentClipProgress = 0.0;
   bool _isComplete = false;
+  bool _isCancelling = false;
   
   // Replaced VideoPlayer with Thumbnail File
   File? _currentThumbnail;
@@ -69,6 +70,7 @@ class _ExportScreenState extends State<ExportScreen> {
 
 
   void _cancelExport() {
+    _isCancelling = true;
     FFMpegService.cancelExport();
     // CRITICAL: Cancel notification multiple times to ensure dismissal
     NotificationService.cancelAll();
@@ -83,7 +85,7 @@ class _ExportScreenState extends State<ExportScreen> {
   }
 
   Future<void> _startBatchPipeline() async {
-    // 1. Setup Directories
+    // ... (rest of setup)
     String? customPath;
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -101,8 +103,9 @@ class _ExportScreenState extends State<ExportScreen> {
     int failCount = 0;
 
     for (int i = 0; i < widget.videoFiles.length; i++) {
-        if (!mounted) break;
+        if (!mounted || _isCancelling) break;
         
+        // ... (logging and variable setup)
         final file = widget.videoFiles[i];
         final settings = widget.videoSettings[i];
         
@@ -115,7 +118,7 @@ class _ExportScreenState extends State<ExportScreen> {
 
         // 1. Generate Thumbnail (Fast, no player)
         FFMpegService.generateThumbnail(file.path).then((path) {
-           if (mounted && path != null) {
+           if (mounted && !_isCancelling && path != null) {
               setState(() => _currentThumbnail = File(path));
            }
         });
@@ -144,7 +147,7 @@ class _ExportScreenState extends State<ExportScreen> {
 
         // 4. Sequential Pipeline (Robust & Optimized)
         for (int c = 0; c < plan.length; c++) {
-            if (!mounted || FFMpegService.isCancelled) break;
+            if (!mounted || FFMpegService.isCancelled || _isCancelling) break;
             
             final clip = plan[c];
             final start = clip['start']!;
@@ -161,15 +164,18 @@ class _ExportScreenState extends State<ExportScreen> {
                _currentClipProgress = 0.0;
             });
             
-            NotificationService.showProgress(
-               (_currentVideoProgress * 100).toInt(), 
-               message: "V${i+1}: Clip ${c+1}/${plan.length}"
-            );
+            if (!_isCancelling) {
+               NotificationService.showProgress(
+                  (_currentVideoProgress * 100).toInt(), 
+                  message: "V${i+1}: Clip ${c+1}/${plan.length}"
+               );
+            }
 
             // Execute via Queue (Sequential)
             final resultPath = await FFMpegService.enqueueJob(() async {
                 String? resultPath;
                 
+                // ... (Resolution calc - keep mostly same)
                 // Calculate Output Resolution (Unified for both Engines)
                 int outHeight = widget.exportHeight;
                 double ratio = 9/16; // Default to 9:16
@@ -192,8 +198,7 @@ class _ExportScreenState extends State<ExportScreen> {
                      if (outWidth % 2 != 0) outWidth--;
                 } else if (widget.aspectRatio == "Original") {
                      // If original, we might deduce from source or just let FFmpeg handle it?
-                     // If we strictly want to match input aspect ratio, we leave outWidth null
-                     // and let executeSmartExport derive it or just scale height.
+                     // (Keep existing logic)
                 }
 
                 // FFmpeg Software Export
@@ -201,7 +206,7 @@ class _ExportScreenState extends State<ExportScreen> {
                 
                 bool exportComplete = false;
                 final progressTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
-                  if (!mounted || exportComplete) {
+                  if (!mounted || exportComplete || _isCancelling) {
                     timer.cancel();
                     return;
                   }
@@ -216,10 +221,12 @@ class _ExportScreenState extends State<ExportScreen> {
                   final currentClipProportion = (c + simulatedProgress) / plan.length;
                   final overallProgressPercent = ((_currentVideoIndex + currentClipProportion) / widget.videoFiles.length * 100).toInt();
                   
-                  NotificationService.showProgress(
-                    overallProgressPercent,
-                    message: "V${_currentVideoIndex + 1}: Clip $_currentClipIndex/$_totalClipsForCurrentVideo (${(simulatedProgress * 100).toInt()}%)"
-                  );
+                  if (!_isCancelling) {
+                    NotificationService.showProgress(
+                      overallProgressPercent,
+                      message: "V${_currentVideoIndex + 1}: Clip $_currentClipIndex/$_totalClipsForCurrentVideo (${(simulatedProgress * 100).toInt()}%)"
+                    );
+                  }
                 });
                 
                 resultPath = await FFMpegService.executeSmartExport(
@@ -229,7 +236,7 @@ class _ExportScreenState extends State<ExportScreen> {
                    duration: duration, 
                    settings: settings, 
                    outputHeight: widget.exportHeight,
-                   outputWidth: outWidth, // PASSING TARGET WIDTH TRIGGERS PADDING
+                   outputWidth: outWidth, 
                 );
                 
                 exportComplete = true;
@@ -237,16 +244,16 @@ class _ExportScreenState extends State<ExportScreen> {
                 return resultPath;
             });
 
+            if (_isCancelling) break;
+
             if (mounted && resultPath != null) {
                // SUCCESSFUL GENERATION
-               // NOTE: FFMpegService already saved to gallery internally
-               // We only need to copy to custom path if specified
+               // ... (Keep existing gallery save logic)
                
                // Copy to Custom Path (Best Effort)
                if (customPath != null) {
                  try {
                    final targetFile = File("$customPath/$outFileName");
-                   // Ensure parent exists (unlikely to help with scoped storage but good practice)
                    if (!await targetFile.parent.exists()) {
                       // Try to create? Usually fails if no permission
                    }
@@ -254,7 +261,6 @@ class _ExportScreenState extends State<ExportScreen> {
                    print("✅ Copied to custom path: ${targetFile.path}");
                  } catch (e) {
                    print("⚠️ Could not copy to custom path (Scoped Storage check): $e");
-                   // Do NOT fail the export. Gallery save is enough.
                  }
                }
             
@@ -265,27 +271,34 @@ class _ExportScreenState extends State<ExportScreen> {
                
                final currentVideoActualProgress = (c + 1.0) / plan.length;
                final overallProgressPercent = ((_currentVideoIndex + currentVideoActualProgress) / widget.videoFiles.length * 100).toInt();
-               NotificationService.showProgress(
-                 overallProgressPercent,
-                 message: "V${_currentVideoIndex + 1}: Clip $_currentClipIndex/$_totalClipsForCurrentVideo (100%)"
-               );
+               
+               if (!_isCancelling) {
+                 NotificationService.showProgress(
+                   overallProgressPercent,
+                   message: "V${_currentVideoIndex + 1}: Clip $_currentClipIndex/$_totalClipsForCurrentVideo (100%)"
+                 );
+               }
             } else {
-               print("❌ Clip Export Failed: Video $i Clip $c");
-               failCount++;
+               if (!_isCancelling) { // Only log failure if not cancelled
+                 print("❌ Clip Export Failed: Video $i Clip $c");
+                 failCount++;
+               }
             }
-        }
+        } // End Clip Loop
 
         // STABILIZATION DELAY
-        if (mounted) {
+        if (mounted && !_isCancelling) {
            await Future.delayed(const Duration(milliseconds: 500));
         }
 
         if (i % 5 == 0) {
            await FFMpegService.freeResources();
         }
-    }
+    } // End Video Loop
 
-    if (mounted) {
+    if (mounted && !_isCancelling) {
+      // Process complete
+      
       setState(() {
         _isComplete = true;
       });
