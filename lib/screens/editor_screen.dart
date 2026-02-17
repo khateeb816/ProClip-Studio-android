@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
-import 'package:file_picker/file_picker.dart';
 import '../services/ffmpeg_service.dart';
 import '../services/metadata_service.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -35,11 +34,11 @@ class _EditorScreenState extends State<EditorScreen> {
   String? _audioPath;
   double _clipDuration = 30.0;
   String _aspectRatio = "9:16";
-  String _audioMode = "mix"; // mix, background, original
+  String _audioMode = "mix"; // mix, background, original , muted
   bool _isExporting = false;
   double _exportProgress = 0.0;
   Size _viewportSize = Size.zero;
-  bool _isMuted = true; // Default to muted
+  bool _isMuted = false; // Default to not muted
   
   // Audio Player for Background Music
   final AudioPlayer _audioPlayer = AudioPlayer();
@@ -428,14 +427,27 @@ class _EditorScreenState extends State<EditorScreen> {
 
 
   void _saveCurrentVideoState() {
-     for (var setting in _videoSettings) {
-        setting.transform = _transformController.value;
-        setting.cropRect = _getPreciseCropRect();
-        setting.viewportSize = _viewportSize;
-        setting.audioPath = _audioPath;
-        setting.audioMode = _audioMode;
-        setting.isMuted = _isMuted;
-     }
+     if (_currentVideoIndex < 0 || _currentVideoIndex >= _videoSettings.length) return;
+     
+     // Only update the CURRENT video's settings
+     final setting = _videoSettings[_currentVideoIndex];
+     
+     setting.transform = _transformController.value;
+     setting.cropRect = _getPreciseCropRect();
+     setting.viewportSize = _viewportSize;
+     
+     // Note: These act as global overrides for now, but strictly should be per-project
+     // We settle for saving them to the current clip if that's how the logic flows, 
+     // or we might want to iterate if we really intend to apply audio to ALL.
+     // For now, let's fix the crop/transform issue first.
+     setting.audioPath = _audioPath;
+     setting.audioMode = _audioMode;
+     setting.isMuted = _isMuted;
+     
+     print("💾 Saved State for Video $_currentVideoIndex:");
+     print("   Transform: ${setting.transform!.storage}");
+     print("   CropRect: ${setting.cropRect}");
+     print("   Viewport: ${_viewportSize}");
   }
 
   // ... (existing methods)
@@ -607,8 +619,16 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _startExport() {
-    // Save state of current video before exporting
+    // 1. Save state of current video (Visuals only)
     _saveCurrentVideoState();
+    
+    // 2. Sync GLOBAL Audio settings to ALL clips
+    // Since Audio is a global timeline feature in this app
+    for (var setting in _videoSettings) {
+       setting.audioPath = _audioPath;
+       setting.audioMode = _audioMode;
+       setting.isMuted = _isMuted;
+    }
     
     // Pause video to prevent audio leak during export
     _videoController?.pause();
@@ -1001,6 +1021,10 @@ class _EditorScreenState extends State<EditorScreen> {
                           minScale: 0.1,
                           maxScale: 10.0,
                           boundaryMargin: const EdgeInsets.all(double.infinity),
+                          onInteractionEnd: (details) {
+                             _saveCurrentVideoState();
+                             print("✋ Interaction End. Saved State: ${_transformController.value.storage}");
+                          },
                           child: Center(
                             child: AspectRatio(
                               aspectRatio: videoAspectRatio,

@@ -244,7 +244,10 @@ class FFMpegService {
           targetWidth: outputWidth,
           audioPath: settings.audioPath,
           audioMode: settings.audioMode,
-          isMuted: settings.audioMode == null && settings.audioPath == null, // Fallback muting logic if needed
+          // CRITICAL FIX: Respect the explicit isMuted flag from settings
+          // If settings.isMuted is true, we MUST mute.
+          // Otherwise, fall back to auto-detection (if no audio mode/path).
+          isMuted: settings.isMuted || (settings.audioMode == null && settings.audioPath == null),
       );
   }
 
@@ -321,9 +324,55 @@ class FFMpegService {
       cmd.addAll(["-t", duration.toStringAsFixed(3)]);
 
       String vf = "";
+      // Resolve Input Dimensions for detailed crop calculation
+      int iw = 1280; // Default fallback
+      int ih = 720;
+      try {
+        final meta = await getVideoMetadata(inputPath);
+        if (meta != null) {
+          iw = meta.width;
+          ih = meta.height;
+        }
+      } catch (e) {
+        print("⚠️ Failed to get metadata for crop calc: $e");
+      }
+
       // Crop First (if needed)
-      if (cropRect != null && cropRect != const Rect.fromLTWH(0,0,1,1)) {
-         vf += "crop=iw*${cropRect.width}:ih*${cropRect.height}:iw*${cropRect.left}:ih*${cropRect.top}";
+      bool needsCrop = false;
+      String cropFilter = "";
+      
+      if (cropRect != null) {
+         // Tolerance check (allow 1% margin of error for "full screen")
+         if (cropRect.width < 0.99 || cropRect.height < 0.99 || cropRect.left > 0.01 || cropRect.top > 0.01) {
+            needsCrop = true;
+            
+            // Calculate Absolute Pixels
+            int cw = (cropRect.width * iw).round();
+            int ch = (cropRect.height * ih).round();
+            int cx = (cropRect.left * iw).round();
+            int cy = (cropRect.top * ih).round();
+            
+            // Safety Clamps (Ensure we don't go out of bounds)
+            cw = cw.clamp(16, iw); // Min 16px width
+            ch = ch.clamp(16, ih); // Min 16px height
+            cx = cx.clamp(0, iw - cw);
+            cy = cy.clamp(0, ih - ch);
+            
+            // Ensure even numbers for some codecs (though crop usually handles odd, good practice)
+            cw = (cw ~/ 2) * 2;
+            ch = (ch ~/ 2) * 2;
+            cx = (cx ~/ 2) * 2;
+            cy = (cy ~/ 2) * 2;
+
+            cropFilter = "crop=$cw:$ch:$cx:$cy";
+         }
+      }
+
+      if (needsCrop) {
+         vf += cropFilter;
+         print("✂️ Applying Crop (Absolute): $cropFilter (Source: ${iw}x${ih})");
+      } else {
+         print("ℹ️ Skipping Crop (Full Screen)");
       }
       
       int alignedHeight = _alignToMod16(targetHeight);
@@ -331,7 +380,16 @@ class FFMpegService {
       if (targetWidth != null) {
            int alignedWidth = _alignToMod16(targetWidth);
            if (vf.isNotEmpty) vf += ",";
-           vf += "scale=$alignedWidth:$alignedHeight:force_original_aspect_ratio=decrease,pad=$alignedWidth:$alignedHeight:(ow-iw)/2:(oh-ih)/2:color=black";
+           
+           // If we have applied a custom crop (Zoom), we likely want to FILL the target
+           // preventing black bars due to slight viewport AR mismatches.
+           if (vf.contains("crop=")) {
+              // ASPECT FILL (Cover)
+              vf += "scale=$alignedWidth:$alignedHeight:force_original_aspect_ratio=increase,crop=$alignedWidth:$alignedHeight";
+           } else {
+              // ASPECT FIT (Pad) - Default behavior for full videos
+              vf += "scale=$alignedWidth:$alignedHeight:force_original_aspect_ratio=decrease,pad=$alignedWidth:$alignedHeight:(ow-iw)/2:(oh-ih)/2:color=black";
+           }
       } else {
            if (vf.isNotEmpty) vf += ",";
            vf += "scale=-2:$alignedHeight";
