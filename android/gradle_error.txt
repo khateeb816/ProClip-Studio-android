@@ -1,0 +1,67 @@
+﻿./gradlew : WARNING: 
+A restricted method 
+in java.lang.System 
+has been called
+At line:1 char:13
++ cd android; 
+./gradlew 
+assembleRelease 2>&1 
+| Out-File -FilePath 
+gradl ...
++             ~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (WARNING: A   
+  rest...has been     
+called:String) []    
+, RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+WARNING: java.lang.Sys
+tem::load has been 
+called by net.rubygrap
+efruit.platform.intern
+al.NativeLibraryLoader
+ in an unnamed module 
+(file:/C:/Users/khate/
+.gradle/wrapper/dists/
+gradle-8.12-all/ejduai
+dbjup3bmmkhw3rie4zb/gr
+adle-8.12/lib/native-p
+latform-0.22-milestone
+-27.jar)
+WARNING: Use --enable-
+native-access=ALL-UNNA
+MED to avoid a 
+warning for callers 
+in this module
+WARNING: Restricted 
+methods will be 
+blocked in a future 
+release unless native 
+access is enabled
+
+
+FAILURE: Build failed 
+with an exception.
+
+* What went wrong:
+25.0.2
+
+* Try:
+> Run with 
+--stacktrace option 
+to get the stack 
+trace.
+> Run with --info or 
+--debug option to get 
+more log output.
+> Run with --scan to 
+get full insights.
+> Get more help at htt
+ps://help.gradle.org.
+
+BUILD FAILED in 1s
