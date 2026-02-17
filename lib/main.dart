@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'screens/splash_screen.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'screens/auth/auth_wrapper.dart';
 import 'services/notification_service.dart';
 import 'services/ffmpeg_service.dart';
-
 import 'services/background_service.dart';
 
 void main() async {
@@ -11,6 +11,11 @@ void main() async {
   
   try {
     debugPrint("🚀 Starting App Initialization...");
+    
+    // Initialize Firebase
+    await Firebase.initializeApp();
+    debugPrint("✅ Firebase Initialized");
+    
     await NotificationService.init();
     await FFMpegService.init(); // Initialize FFMpeg Config
     await BackgroundService.initializeService(); // Initialize Background Service
@@ -43,7 +48,7 @@ class ProClipStudioApp extends StatelessWidget {
           Theme.of(context).textTheme.apply(bodyColor: const Color(0xFFE0E0E0)),
         ),
       ),
-      home: const SplashScreen(),
+      home: const AuthWrapper(),
       debugShowCheckedModeBanner: false,
     );
   }

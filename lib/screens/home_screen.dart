@@ -7,6 +7,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'media_picker_screen.dart'; // Import Custom Picker
 import 'clips_screen.dart';
 import 'settings_screen.dart';
+import 'profile_screen.dart';
 import '../services/clip_repository.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -23,6 +24,7 @@ class _HomeScreenState extends State<HomeScreen> {
     const _HomeTab(),
     const ClipsScreen(),
     const SettingsScreen(),
+    const ProfileScreen(),
   ];
 
   @override
@@ -45,6 +47,7 @@ class _HomeScreenState extends State<HomeScreen> {
           BottomNavigationBarItem(icon: Icon(Icons.home), label: "Home"),
           BottomNavigationBarItem(icon: Icon(Icons.video_library), label: "Clips"),
           BottomNavigationBarItem(icon: Icon(Icons.settings), label: "Settings"),
+          BottomNavigationBarItem(icon: Icon(Icons.person), label: "Profile"),
         ],
       ),
     );

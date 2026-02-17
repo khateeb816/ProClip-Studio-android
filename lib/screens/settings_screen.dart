@@ -1,4 +1,3 @@
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -10,7 +9,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  String? _customOutputPath;
   bool _platformInstagram = true;
   bool _platformYouTube = true;
   bool _platformTikTok = true;
@@ -29,29 +27,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _customOutputPath = prefs.getString('custom_output_path');
       _platformInstagram = prefs.getBool('platform_instagram') ?? true;
       _platformYouTube = prefs.getBool('platform_youtube') ?? true;
       _platformTikTok = prefs.getBool('platform_tiktok') ?? true;
     });
   }
 
-  Future<void> _pickOutputFolder() async {
-    String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
 
-    if (selectedDirectory != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('custom_output_path', selectedDirectory);
-      setState(() {
-        _customOutputPath = selectedDirectory;
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Output folder set to: $selectedDirectory")),
-        );
-      }
-    }
-  }
 
   Future<void> _togglePlatform(String platform, bool value) async {
     final prefs = await SharedPreferences.getInstance();
@@ -75,26 +57,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Output Folder Section
-          const Text(
-            "General",
-            style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 10),
-          ListTile(
-            tileColor: Colors.grey[900],
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            leading: const Icon(Icons.folder_open, color: Colors.white),
-            title: const Text("Output Folder", style: TextStyle(color: Colors.white)),
-            subtitle: Text(
-              _customOutputPath ?? "Default: Documents/ProClipStudio",
-              style: const TextStyle(color: Colors.grey, fontSize: 12),
-            ),
-            trailing: const Icon(Icons.edit, color: Colors.cyanAccent),
-            onTap: _pickOutputFolder,
-          ),
-          const SizedBox(height: 30),
-          
           // Platform Settings Section
           const Text(
             "Platform Settings",
