@@ -13,6 +13,15 @@ class AuthService {
   // Get current user
   User? get currentUser => _auth.currentUser;
 
+  // Stream of user data from Firestore
+  Stream<DocumentSnapshot<Map<String, dynamic>>> userStream([String? userId]) {
+    final uid = userId ?? currentUser?.uid;
+    if (uid == null) {
+      return const Stream.empty();
+    }
+    return _firestore.collection('users').doc(uid).snapshots();
+  }
+
   // Register with email and password
   Future<UserCredential?> registerWithEmailPassword({
     required String email,
@@ -111,6 +120,11 @@ class AuthService {
         'email': user.email,
         'displayName': user.displayName ?? 'User',
         'photoURL': user.photoURL,
+        'role': 'user', // Default role
+        'subscriptionStatus': 'free', // Default subscription
+        'subscriptionPlan': null, // No plan for free users
+        'subscriptionExpiry': null, // No expiry for free users
+        'isActive': true, // Account is active by default
         'createdAt': FieldValue.serverTimestamp(),
         'lastLogin': FieldValue.serverTimestamp(),
       });
@@ -151,6 +165,40 @@ class AuthService {
       throw _handleAuthException(e);
     } catch (e) {
       throw 'Password reset failed: $e';
+    }
+  }
+
+  // Get user role from Firestore
+  Future<String?> getUserRole() async {
+    try {
+      final uid = currentUser?.uid;
+      if (uid == null) return null;
+
+      final doc = await _firestore.collection('users').doc(uid).get();
+      return doc.data()?['role'] as String?;
+    } catch (e) {
+      print('Error getting user role: $e');
+      return null;
+    }
+  }
+
+  // Check if current user is admin
+  Future<bool> isAdmin() async {
+    final role = await getUserRole();
+    return role == 'admin';
+  }
+
+  // Get complete user data from Firestore
+  Future<Map<String, dynamic>?> getUserData([String? userId]) async {
+    try {
+      final uid = userId ?? currentUser?.uid;
+      if (uid == null) return null;
+
+      final doc = await _firestore.collection('users').doc(uid).get();
+      return doc.data();
+    } catch (e) {
+      print('Error getting user data: $e');
+      return null;
     }
   }
 }

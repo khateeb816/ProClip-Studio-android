@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/auth_service.dart';
+import 'admin/admin_panel_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -12,6 +14,41 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   final _authService = AuthService();
   bool _isLoading = false;
+  Map<String, dynamic>? _userData;
+  bool _isAdmin = false;
+  StreamSubscription? _userSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _initUserStream();
+  }
+
+  @override
+  void dispose() {
+    _userSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _initUserStream() {
+    setState(() => _isLoading = true);
+    _userSubscription = _authService.userStream().listen((snapshot) {
+      if (snapshot.exists && snapshot.data() != null) {
+        if (mounted) {
+          setState(() {
+            _userData = snapshot.data();
+            _isAdmin = _userData?['role'] == 'admin';
+            _isLoading = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoading = false);
+      }
+    }, onError: (e) {
+      print('Error in user stream: $e');
+      if (mounted) setState(() => _isLoading = false);
+    });
+  }
 
   Future<void> _signOut() async {
     final confirmed = await showDialog<bool>(
@@ -132,6 +169,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
 
+                  const SizedBox(height: 12),
+
+                  // Subscription Badge
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _getSubscriptionColor(),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _getSubscriptionIcon(),
+                          size: 16,
+                          color: Colors.white,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _getSubscriptionText(),
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
                   const SizedBox(height: 40),
 
                   // Account Info Card
@@ -184,6 +251,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
 
                   const SizedBox(height: 32),
+
+                  // Admin Panel Button (only for admins)
+                  if (_isAdmin) ...[
+                    SizedBox(
+                      width: double.infinity,
+                      height: 56,
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const AdminPanelScreen(),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.admin_panel_settings),
+                        label: const Text(
+                          'Admin Panel',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.deepPurpleAccent,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 0,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
 
                   // Sign Out Button
                   SizedBox(
@@ -267,5 +369,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ),
       ],
     );
+  }
+
+  Color _getSubscriptionColor() {
+    final status = _userData?['subscriptionStatus'] as String? ?? 'free';
+    return status == 'premium' ? Colors.amber : Colors.grey;
+  }
+
+  IconData _getSubscriptionIcon() {
+    final status = _userData?['subscriptionStatus'] as String? ?? 'free';
+    return status == 'premium' ? Icons.star : Icons.person;
+  }
+
+  String _getSubscriptionText() {
+    final status = _userData?['subscriptionStatus'] as String? ?? 'free';
+    if (status == 'premium') {
+      final plan = _userData?['subscriptionPlan'] as String?;
+      if (plan != null) {
+        return 'Premium - ${plan[0].toUpperCase()}${plan.substring(1)}';
+      }
+      return 'Premium';
+    }
+    return 'Free';
   }
 }
