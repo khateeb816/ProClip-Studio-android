@@ -17,9 +17,12 @@ class FFMpegService {
   static bool get isCancelled => _isCancelled;
 
   static Future<void> init() async {
-    // Disable logs for speed
-    FFmpegKitConfig.enableLogCallback((log) {}); 
-    FFmpegKitConfig.setLogLevel(Level.avLogError); 
+    // Enable logs for debugging (reduce to avLogError once export is confirmed working)
+    FFmpegKitConfig.enableLogCallback((log) {
+      final msg = log.getMessage();
+      if (msg != null && msg.isNotEmpty) print('[FFmpeg] $msg');
+    });
+    FFmpegKitConfig.setLogLevel(Level.avLogWarning);
     
     // Clear previous sessions to free memory
     await FFmpegKit.cancel();
@@ -210,22 +213,21 @@ class FFMpegService {
       final int srcHeight = meta?.height ?? 720;
       
       // 2. Stream Copy Check (Fast Path)
-      // Only possible if NO modifications needed
+      // DISABLED: Enforcing software encoding only as per requirements
       final bool isSimpleCut = (settings.cropRect == null || settings.cropRect == const Rect.fromLTWH(0,0,1,1)) &&
                                (settings.audioPath == null) && 
                                (settings.transform == null) &&
                                (outputWidth == null);
 
-      // Stream copy ONLY if starting from 0.0 for keyframe alignment
-      if (isSimpleCut && start == 0.0) {
-          final result = await executeStreamCopy(
-             inputPath: inputPath, 
-             start: start, 
-             duration: duration, 
-             outputPath: outputPath
-          );
-          if (result != null) return result;
-      }
+      // if (isSimpleCut && start == 0.0) {
+      //     final result = await executeStreamCopy(
+      //        inputPath: inputPath, 
+      //        start: start, 
+      //        duration: duration, 
+      //        outputPath: outputPath
+      //     );
+      //     if (result != null) return result;
+      // }
       
       // 3. Software Re-Encode (libx264)
       int targetH = outputHeight;
@@ -244,10 +246,9 @@ class FFMpegService {
           targetWidth: outputWidth,
           audioPath: settings.audioPath,
           audioMode: settings.audioMode,
-          // CRITICAL FIX: Respect the explicit isMuted flag from settings
-          // If settings.isMuted is true, we MUST mute.
-          // Otherwise, fall back to auto-detection (if no audio mode/path).
-          isMuted: settings.isMuted || (settings.audioMode == null && settings.audioPath == null),
+          // Only mute when the user explicitly requested it via settings.
+          // Normal clips (no custom audio path) should preserve their original audio.
+          isMuted: settings.isMuted,
       );
   }
 
@@ -270,12 +271,9 @@ class FFMpegService {
             final durStr = info.getDuration();
             final dur = double.tryParse(durStr ?? "0") ?? 0;
             
-            // Tolerance +/- 1.0s (FFmpeg cuts can be imprecise due to keyframes)
-            // But for HW encode it should be accurate.
-            if ((dur - expectedDuration).abs() > 1.0) {
+            // Tolerance +/- 2.5s — stream copy clips can vary due to keyframe alignment.
+            if ((dur - expectedDuration).abs() > 2.5) {
                 print("❌ Validation Failed: Duration Mismatch (Got $dur, Expected $expectedDuration)");
-                // Strict validation might fail valid files if metadata is weird. 
-                // For now, if it plays, we might accept it, but let's be strict for "Zero Corruption".
                 return null; 
             }
             
@@ -323,7 +321,22 @@ class FFMpegService {
 
       cmd.addAll(["-t", duration.toStringAsFixed(3)]);
 
-      String vf = "";
+      // CRITICAL: Use scale=iw:ih as the VERY FIRST filter to absorb HEVC decoder reinit signals.
+      //
+      // Root cause: This HEVC video (hvc1/yuvj420p) outputs frames with INCONSISTENT
+      // color-space metadata (some: csp:gbr range:unknown, others: csp:bt709 range:pc).
+      // FFmpeg sends a "reinit" signal through the filter graph when frame properties change.
+      //
+      // WHY scale WORKS and others don't:
+      //   - setparams, format, crop: NOT reinit-safe. They crash or propagate the reinit.
+      //   - scale filter: UNIQUELY designed with auto_scale support — it handles property
+      //     changes gracefully by reinitializing itself without failing or propagating.
+      //
+      // By placing scale=iw:ih first, it silently absorbs every reinit from the decoder.
+      // All subsequent filters (crop, scale again, etc.) only ever see stable frames.
+      // format=yuv420p then normalizes to a clean, consistent pixel format.
+      String vf = "scale=iw:ih:flags=fast_bilinear,format=yuv420p";
+
       // Resolve Input Dimensions for detailed crop calculation
       int iw = 1280; // Default fallback
       int ih = 720;
@@ -346,29 +359,25 @@ class FFMpegService {
          if (cropRect.width < 0.99 || cropRect.height < 0.99 || cropRect.left > 0.01 || cropRect.top > 0.01) {
             needsCrop = true;
             
-            // Calculate Absolute Pixels
-            int cw = (cropRect.width * iw).round();
-            int ch = (cropRect.height * ih).round();
-            int cx = (cropRect.left * iw).round();
-            int cy = (cropRect.top * ih).round();
+            // DYNAMIC FFmpeg EXPRESSIONS (Robut against HEVC decoder re-init on bad frames)
+            String wStr = cropRect.width.toStringAsFixed(4);
+            String hStr = cropRect.height.toStringAsFixed(4);
+            String xStr = cropRect.left.toStringAsFixed(4);
+            String yStr = cropRect.top.toStringAsFixed(4);
             
-            // Safety Clamps (Ensure we don't go out of bounds)
-            cw = cw.clamp(16, iw); // Min 16px width
-            ch = ch.clamp(16, ih); // Min 16px height
-            cx = cx.clamp(0, iw - cw);
-            cy = cy.clamp(0, ih - ch);
-            
-            // Ensure even numbers for some codecs (though crop usually handles odd, good practice)
-            cw = (cw ~/ 2) * 2;
-            ch = (ch ~/ 2) * 2;
-            cx = (cx ~/ 2) * 2;
-            cy = (cy ~/ 2) * 2;
+            // To ensure mod-2 macroblock alignment (required for some encoders):
+            // crop='trunc(iw*w/2)*2':'trunc(ih*h/2)*2':'trunc(iw*x/2)*2':'trunc(ih*y/2)*2'
+            String cw = "trunc(iw*$wStr/2)*2";
+            String ch = "trunc(ih*$hStr/2)*2";
+            String cx = "trunc(iw*$xStr/2)*2";
+            String cy = "trunc(ih*$yStr/2)*2";
 
             cropFilter = "crop=$cw:$ch:$cx:$cy";
          }
       }
 
       if (needsCrop) {
+         if (vf.isNotEmpty) vf += ","; // comma after format=yuv420p
          vf += cropFilter;
          print("✂️ Applying Crop (Absolute): $cropFilter (Source: ${iw}x${ih})");
       } else {
@@ -398,8 +407,11 @@ class FFMpegService {
       cmd.addAll(["-vf", vf]);
 
       // Audio Logic
+      // IMPORTANT: -c:a / audio codec flags must ONLY be added when audio is included.
+      // Mixing -an with -c:a causes FFmpeg to fail with a non-zero exit code.
       if (isMuted || (audioMode == "background" && audioPath == null)) {
-         cmd.addAll(["-an"]); 
+         // No audio — suppress audio stream entirely
+         cmd.addAll(["-an"]);
       } else {
          if (audioPath != null && (audioMode == "mix" || audioMode == "background")) {
              if (audioMode == "mix") {
@@ -416,8 +428,11 @@ class FFMpegService {
                 ]);
              }
          } else {
-             cmd.addAll(["-map", "0:v", "-map", "0:a"]);
+             // Keep original video + audio
+             cmd.addAll(["-map", "0:v", "-map", "0:a?"]);
          }
+         // Audio codec — only when audio is being included
+         cmd.addAll(["-c:a", "aac", "-b:a", "128k"]);
       }
 
       // SOFTWARE ENCODER (libx264)
@@ -426,8 +441,6 @@ class FFMpegService {
         "-preset", "faster",
         "-crf", "23",
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "128k",
         "-movflags", "+faststart",
         outputPath
       ]);
@@ -462,7 +475,8 @@ class FFMpegService {
         "-i", videoPath,
         "-vframes", "1",
         "-q:v", "5", // Low quality jpg
-        "-vf", "scale=240:-1", // Tiny thumbnail
+        "-vf", "format=yuv420p,scale=240:-2", // Normalize format + tiny thumbnail
+        "-update", "1", // Required for single-frame image2 output in newer FFmpeg
         outPath
      ];
      

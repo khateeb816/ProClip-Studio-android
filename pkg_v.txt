@@ -1,0 +1,10 @@
+﻿ffmpeg_kit_flutter_new : 4.1.0
+ffmpeg_kit_flutter_new_min : 3.1.0
+ffmpeg_kit_flutter_new_min_gpl : 2.1.1
+ffmpeg_kit_flutter_new_audio : 2.0.0
+ffmpeg_kit_flutter_new_https : 2.1.0
+ffmpeg_kit_flutter_new_https_gpl : 2.1.0
+ffmpeg_kit_flutter_new_video : 2.0.0
+ffmpeg_kit_flutter_new_full : 2.0.0
+ffmpeg_kit_flutter_new_gpl : 1.6.5
+simple_icons : 14.6.1

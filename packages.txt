@@ -1,0 +1,10 @@
+ffmpeg_kit_flutter_new
+ffmpeg_kit_flutter_new_min
+ffmpeg_kit_flutter_new_min_gpl
+ffmpeg_kit_flutter_new_audio
+ffmpeg_kit_flutter_new_https
+ffmpeg_kit_flutter_new_https_gpl
+ffmpeg_kit_flutter_new_video
+ffmpeg_kit_flutter_new_full
+ffmpeg_kit_flutter_new_gpl
+simple_icons
