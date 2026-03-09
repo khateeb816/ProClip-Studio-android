@@ -8,6 +8,7 @@ import '../services/ffmpeg_service.dart';
 import '../services/notification_service.dart';
 import '../models/video_settings.dart';
 import '../services/auth_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'profile_screen.dart';
 import 'home_screen.dart';
 
@@ -205,8 +206,28 @@ class _ExportScreenState extends State<ExportScreen> {
             final userData = await _authService.getUserData();
             final status = userData?['subscriptionStatus'] as String? ?? 'free';
             final exportedCount = userData?['clipsExported'] as int? ?? 0;
+            
+            bool isLimitReached = false;
 
-            if (status == 'free' && exportedCount >= 10) {
+            if (status == 'free') {
+              if (exportedCount >= 10) {
+                isLimitReached = true;
+              } else {
+                // Check device-level global free limit
+                try {
+                  final deviceId = await _authService.getDeviceId();
+                  final deviceDoc = await FirebaseFirestore.instance.collection('devices').doc(deviceId).get();
+                  final globalFreeExported = deviceDoc.data()?['freeClipsExported'] as int? ?? 0;
+                  if (globalFreeExported >= 10) {
+                    isLimitReached = true;
+                  }
+                } catch (e) {
+                  print("Error checking device export limit: $e");
+                }
+              }
+            }
+
+            if (isLimitReached) {
               if (mounted) {
                 _cancelExport(isLimitReached: true);
               }

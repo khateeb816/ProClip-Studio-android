@@ -1,6 +1,10 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:io';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -54,13 +58,20 @@ class AuthService {
     required String password,
   }) async {
     try {
-      return await _auth.signInWithEmailAndPassword(
+      final credential = await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
+      
+      if (credential.user != null) {
+        await _verifyPremiumDevice(credential.user!);
+      }
+      
+      return credential;
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
     } catch (e) {
+      if (e.toString().contains('This Premium account is bound to another device')) rethrow;
       throw 'Sign in failed: $e';
     }
   }
@@ -92,10 +103,15 @@ class AuthService {
         await _createUserDocument(userCredential.user!);
       }
 
+      if (userCredential.user != null) {
+        await _verifyPremiumDevice(userCredential.user!);
+      }
+
       return userCredential;
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
     } catch (e) {
+      if (e.toString().contains('This Premium account is bound to another device')) rethrow;
       throw 'Google sign in failed: $e';
     }
   }
@@ -125,6 +141,7 @@ class AuthService {
         'subscriptionPlan': null, // No plan for free users
         'subscriptionExpiry': null, // No expiry for free users
         'isActive': true, // Account is active by default
+        'boundDeviceId': null, // For Premium Device Integrity
         'clipsExported': 0, // Number of clips exported
         'clipsUploaded': 0, // Number of clips shared/uploaded
         'createdAt': FieldValue.serverTimestamp(),
@@ -217,8 +234,70 @@ class AuthService {
       if (updates.isNotEmpty) {
         await _firestore.collection('users').doc(uid).update(updates);
       }
+      
+      // Update global device export count for Free users
+      if (isExport) {
+         final doc = await _firestore.collection('users').doc(uid).get();
+         if (doc.exists && doc.data()?['subscriptionStatus'] == 'free') {
+             final deviceId = await getDeviceId();
+             await _firestore.collection('devices').doc(deviceId).set({
+                 'freeClipsExported': FieldValue.increment(1),
+                 'lastUpdated': FieldValue.serverTimestamp(),
+             }, SetOptions(merge: true));
+         }
+      }
     } catch (e) {
       print('Error incrementing clip stats: $e');
+    }
+  }
+
+  // --- Device Integrity ---
+  Future<String> getDeviceId() async {
+    try {
+      final deviceInfo = DeviceInfoPlugin();
+      if (Platform.isIOS) {
+        final iosInfo = await deviceInfo.iosInfo;
+        return iosInfo.identifierForVendor ?? await _getPrefsDeviceId();
+      } else if (Platform.isAndroid) {
+        // androidId is restricted in newer plugins, so generating a persistent UUID or using ID
+        final androidInfo = await deviceInfo.androidInfo;
+        return androidInfo.id; // Usually a build ID or android ID based on OS
+      }
+    } catch (e) {
+       return await _getPrefsDeviceId();
+    }
+    return await _getPrefsDeviceId();
+  }
+
+  Future<String> _getPrefsDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    String? deviceId = prefs.getString('persistent_device_id');
+    if (deviceId == null) {
+      deviceId = const Uuid().v4();
+      await prefs.setString('persistent_device_id', deviceId);
+    }
+    return deviceId;
+  }
+
+  Future<void> _verifyPremiumDevice(User user) async {
+    final doc = await _firestore.collection('users').doc(user.uid).get();
+    final data = doc.data();
+    if (data == null) return;
+    
+    final status = data['subscriptionStatus'] as String? ?? 'free';
+    if (status != 'free') {
+       final boundDevice = data['boundDeviceId'] as String?;
+       final currentDevice = await getDeviceId();
+       
+       if (boundDevice == null || boundDevice.isEmpty) {
+           // Bind the device
+           await _firestore.collection('users').doc(user.uid).update({
+              'boundDeviceId': currentDevice
+           });
+       } else if (boundDevice != currentDevice) {
+           await signOut();
+           throw 'This Premium account is bound to another device. Please contact Admin to remove the old device.';
+       }
     }
   }
 }

@@ -661,6 +661,33 @@ class _EditUserDialogState extends State<_EditUserDialog> {
               activeColor: Colors.green,
               onChanged: (value) => setState(() => _isActive = value),
             ),
+            if (_subscriptionStatus == 'premium') ...[
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: () async {
+                  try {
+                    await _adminService.resetDeviceBinding(widget.user['id']);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Device binding reset successfully!'), backgroundColor: Colors.green),
+                      );
+                    }
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                      );
+                    }
+                  }
+                },
+                icon: const Icon(Icons.phonelink_erase),
+                label: const Text('Reset Linked Device'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.amber[800],
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ],
           ],
         ),
       ),

@@ -67,6 +67,17 @@ class AdminService {
     }
   }
 
+  // Reset Premium Device Binding
+  Future<void> resetDeviceBinding(String userId) async {
+    try {
+      await _firestore.collection('users').doc(userId).update({
+        'boundDeviceId': null,
+      });
+    } catch (e) {
+      throw 'Failed to reset device binding: $e';
+    }
+  }
+
   // Delete user
   Future<void> deleteUser(String userId) async {
     try {
