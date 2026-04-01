@@ -44,10 +44,15 @@ class AuthService {
       // Create user document in Firestore
       await _createUserDocument(credential.user!);
 
+      if (credential.user != null) {
+        await _verifyDeviceIntegrity(credential.user!);
+      }
+
       return credential;
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
     } catch (e) {
+      if (e.toString().contains('bound to another device') || e.toString().contains('Device integrity alert')) rethrow;
       throw 'Registration failed: $e';
     }
   }
@@ -58,20 +63,36 @@ class AuthService {
     required String password,
   }) async {
     try {
+      // PRE-LOGIN CHECK
+      final currentDevice = await getDeviceId();
+      final userQuery = await _firestore.collection('users').where('email', isEqualTo: email).get();
+      
+      if (userQuery.docs.isNotEmpty) {
+          final data = userQuery.docs.first.data();
+          final status = data['subscriptionStatus'] as String? ?? 'free';
+          final boundDevice = data['boundDeviceId'] as String?;
+          
+          if (status != 'free' && boundDevice != null && boundDevice.isNotEmpty && boundDevice != currentDevice) {
+              throw 'Device mismatch. This Premium account is registered to another device. Please contact Admin to reset it.';
+          } else if (status == 'free' && boundDevice != null && boundDevice.isNotEmpty && boundDevice != currentDevice) {
+              throw 'This Free account is bound to another device. You cannot use it on multiple devices.';
+          }
+      }
+
       final credential = await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
       
       if (credential.user != null) {
-        await _verifyPremiumDevice(credential.user!);
+        await _verifyDeviceIntegrity(credential.user!);
       }
       
       return credential;
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
     } catch (e) {
-      if (e.toString().contains('This Premium account is bound to another device')) rethrow;
+      if (e.toString().contains('bound to another device') || e.toString().contains('Device integrity alert')) rethrow;
       throw 'Sign in failed: $e';
     }
   }
@@ -104,14 +125,14 @@ class AuthService {
       }
 
       if (userCredential.user != null) {
-        await _verifyPremiumDevice(userCredential.user!);
+        await _verifyDeviceIntegrity(userCredential.user!);
       }
 
       return userCredential;
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
     } catch (e) {
-      if (e.toString().contains('This Premium account is bound to another device')) rethrow;
+      if (e.toString().contains('bound to another device') || e.toString().contains('Device integrity alert')) rethrow;
       throw 'Google sign in failed: $e';
     }
   }
@@ -131,6 +152,28 @@ class AuthService {
   // Create user document in Firestore
   Future<void> _createUserDocument(User user) async {
     try {
+      final deviceId = await getDeviceId();
+      
+      // Calculate max limits used by this device for free accounts
+      int maxExported = 0;
+      int maxUploaded = 0;
+      
+      try {
+        final query = await _firestore.collection('users')
+            .where('boundDeviceId', isEqualTo: deviceId)
+            .where('subscriptionStatus', isEqualTo: 'free')
+            .get();
+            
+        for (var doc in query.docs) {
+          final exp = doc.data()['clipsExported'] as int? ?? 0;
+          final upl = doc.data()['clipsUploaded'] as int? ?? 0;
+          if (exp > maxExported) maxExported = exp;
+          if (upl > maxUploaded) maxUploaded = upl;
+        }
+      } catch (e) {
+        print('Error getting max limits: $e');
+      }
+
       await _firestore.collection('users').doc(user.uid).set({
         'uid': user.uid,
         'email': user.email,
@@ -141,9 +184,9 @@ class AuthService {
         'subscriptionPlan': null, // No plan for free users
         'subscriptionExpiry': null, // No expiry for free users
         'isActive': true, // Account is active by default
-        'boundDeviceId': null, // For Premium Device Integrity
-        'clipsExported': 0, // Number of clips exported
-        'clipsUploaded': 0, // Number of clips shared/uploaded
+        'boundDeviceId': deviceId, // For Premium & Free Device Integrity
+        'clipsExported': maxExported, // Shared device limit
+        'clipsUploaded': maxUploaded, // Shared device limit
         'createdAt': FieldValue.serverTimestamp(),
         'lastLogin': FieldValue.serverTimestamp(),
       });
@@ -279,25 +322,27 @@ class AuthService {
     return deviceId;
   }
 
-  Future<void> _verifyPremiumDevice(User user) async {
+  Future<void> _verifyDeviceIntegrity(User user) async {
     final doc = await _firestore.collection('users').doc(user.uid).get();
     final data = doc.data();
     if (data == null) return;
     
     final status = data['subscriptionStatus'] as String? ?? 'free';
-    if (status != 'free') {
-       final boundDevice = data['boundDeviceId'] as String?;
-       final currentDevice = await getDeviceId();
-       
-       if (boundDevice == null || boundDevice.isEmpty) {
-           // Bind the device
-           await _firestore.collection('users').doc(user.uid).update({
-              'boundDeviceId': currentDevice
-           });
-       } else if (boundDevice != currentDevice) {
-           await signOut();
-           throw 'This Premium account is bound to another device. Please contact Admin to remove the old device.';
-       }
+    final boundDevice = data['boundDeviceId'] as String?;
+    final currentDevice = await getDeviceId();
+    
+    if (boundDevice == null || boundDevice.isEmpty) {
+        // Bind the device
+        await _firestore.collection('users').doc(user.uid).update({
+           'boundDeviceId': currentDevice
+        });
+    } else if (boundDevice != currentDevice) {
+        await signOut();
+        if (status == 'free') {
+            throw 'This Free account is bound to another device. You cannot use it on multiple devices.';
+        } else {
+            throw 'This Premium account is bound to another device. Please contact Admin to remove the old device.';
+        }
     }
   }
 }
