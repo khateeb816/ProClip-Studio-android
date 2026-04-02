@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../services/ffmpeg_service.dart';
@@ -50,6 +51,9 @@ class _EditorScreenState extends State<EditorScreen> {
   String _fitMode = 'none'; 
   double? _draggedSliderValue; // For smooth slider dragging; 
   String? _videoError; 
+
+  // Track in-flight HEVC proxy generation per video to avoid duplicate FFmpeg jobs.
+  final Map<int, Future<String?>> _hevcProxyFutures = {};
 
   // Export Settings (Global)
   int _exportHeight = 720;
@@ -134,6 +138,86 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  Future<String?> _ensureHevcProxyForIndex(int index, File originalFile) async {
+    final setting = _videoSettings[index];
+    if (setting.proxyStatus == ProxyStatus.ready && setting.proxyPath != null) {
+      return setting.proxyPath;
+    }
+
+    // If generation is already in-flight, re-use the same future.
+    final existing = _hevcProxyFutures[index];
+    if (existing != null) {
+      // Do not block on an already-running proxy job.
+      return null;
+    }
+
+    // Start generation.
+    setting.proxyStatus = ProxyStatus.generating;
+    if (mounted) {
+      setState(() => _videoError = "Optimizing HEVC Video...");
+    }
+
+    final future = FFMpegService.enqueueJob(() {
+      return FFMpegService.generateHEVCProxy(originalFile.path);
+    });
+    _hevcProxyFutures[index] = future;
+
+    // When proxy completes, automatically switch (if user is still on this video).
+    future.then((proxyPath) async {
+      if (!mounted) return;
+      if (proxyPath == null) return;
+
+      // If the user has moved on to another video, don't disturb them.
+      if (_currentVideoIndex != index) return;
+
+      setting.proxyPath = proxyPath;
+      setting.proxyStatus = ProxyStatus.ready;
+
+      if (mounted) setState(() => _videoError = null);
+
+      // Re-init the player so it uses the proxy file.
+      try {
+        final old = _controllerCache[index];
+        _controllerCache.remove(index);
+        if (old != null) {
+          old.removeListener(_videoListener);
+          await old.dispose();
+        }
+      } catch (_) {}
+
+      _videoController = null;
+      if (mounted) {
+        await _initPlayer(index: index, autoPlay: true);
+      }
+    }).catchError((_) async {
+      if (!mounted) return;
+      if (setting.proxyStatus == ProxyStatus.generating) {
+        setting.proxyStatus = ProxyStatus.failed;
+      }
+      if (mounted) {
+        setState(() => _videoError = "HEVC optimization failed. Tap Retry.");
+      }
+    }).whenComplete(() {
+      _hevcProxyFutures.remove(index);
+    });
+
+    // Briefly wait for proxy readiness so we can recover quickly.
+    try {
+      return await future.timeout(const Duration(seconds: 3));
+    } on TimeoutException {
+      // Don't block: keep playing original while proxy finishes in background.
+      if (mounted) {
+        setState(() => _videoError = "Optimizing HEVC Video... (will switch when ready)");
+      }
+      return null;
+    } catch (_) {
+      if (!mounted) return null;
+      setting.proxyStatus = ProxyStatus.failed;
+      setState(() => _videoError = "HEVC optimization error. Tap Retry.");
+      return null;
+    }
+  }
+
   Future<void> _initPlayer({int index = 0, bool autoPlay = true}) async {
     try {
       final file = widget.videoFiles[index]; // Changed _videos to widget.videoFiles
@@ -205,45 +289,27 @@ class _EditorScreenState extends State<EditorScreen> {
               // 2. If HEVC or 2nd failure, Force Proxy
               if (isHevc || retryCount >= 2) {
                   print("### HEVC/Decoder Failure Detection (Codec: $codec). Enforcing PROXY.");
-                  
-                  // Force generation/wating for proxy
-                  if (_videoSettings[index].proxyStatus != ProxyStatus.ready) {
-                     setState(() => _videoError = "Optimizing HEVC Video...");
-                     
-                     // Proxy step removed
 
-                     
-                     // Poll for readiness
-                     int waitAttempts = 0;
-                     while (_videoSettings[index].proxyStatus != ProxyStatus.ready && waitAttempts < 30) {
-                        await Future.delayed(const Duration(milliseconds: 500));
-                        if (_videoSettings[index].proxyPath != null && await File(_videoSettings[index].proxyPath!).exists()) {
-                            _videoSettings[index].proxyStatus = ProxyStatus.ready;
-                        }
-                        waitAttempts++;
-                     }
-                  }
+                  // Kick off proxy generation (if needed) with a timeout, then switch.
+                  final proxyPath = await _ensureHevcProxyForIndex(index, file);
+                  if (proxyPath != null) {
+                    print("### Fallback: Switching to Proxy for successful playback.");
+                    previewFile = File(proxyPath);
 
-                  // 3. Switch to Proxy
-                  if (_videoSettings[index].proxyStatus == ProxyStatus.ready && _videoSettings[index].proxyPath != null) {
-                     print("### Fallback: Switching to Proxy for successful playback.");
-                     previewFile = File(_videoSettings[index].proxyPath!);
-                     
-                     // Dispose broken controller
-                     try {
-                       await controller.dispose();
-                     } catch (_) {}
-                     
-                     // Create new one with proxy
-                     var newController = VideoPlayerController.file(previewFile);
-                     _videoController = newController;
-                     _controllerCache[index] = newController;
-                     
-                     // Reset loop to try initializing the proxy
-                     controller = newController;
-                     retryCount = 0; 
-                     // IMPORTANT: The loop continues and tries initialzing `controller` (which is now newController)
-                     continue; 
+                    // Dispose broken controller
+                    try {
+                      await controller.dispose();
+                    } catch (_) {}
+
+                    // Create new one with proxy
+                    var newController = VideoPlayerController.file(previewFile);
+                    _videoController = newController;
+                    _controllerCache[index] = newController;
+
+                    // Reset loop to try initializing the proxy
+                    controller = newController;
+                    retryCount = 0;
+                    continue;
                   }
               }
            }
@@ -297,8 +363,15 @@ class _EditorScreenState extends State<EditorScreen> {
     } catch (e) {
       debugPrint("Error initializing video: $e");
       if (mounted) {
+        final setting = _videoSettings[index];
         setState(() {
-          _videoError = "Failed to load video.";
+          if (setting.proxyStatus == ProxyStatus.generating) {
+            _videoError = "Optimizing HEVC Video... (please wait a moment)";
+          } else if (setting.proxyStatus == ProxyStatus.failed) {
+            _videoError = "HEVC optimization failed. Tap Retry.";
+          } else {
+            _videoError = "Failed to load video.";
+          }
         });
       }
     }
@@ -567,8 +640,15 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Rect _getPreciseCropRect() {
-    if (_videoController == null || !_videoController!.value.isInitialized) return const Rect.fromLTWH(0, 0, 1, 1);
+    final videoAR = _videoController?.value.aspectRatio;
+    if (videoAR == null || videoAR.isNaN || videoAR <= 0) {
+      return const Rect.fromLTWH(0, 0, 1, 1);
+    }
 
+    return _getPreciseCropRectForAspectRatio(videoAR);
+  }
+
+  Rect _getPreciseCropRectForAspectRatio(double videoAR) {
     final Matrix4 transform = _transformController.value;
     final Matrix4 inverse = Matrix4.copy(transform)..invert();
 
@@ -584,10 +664,7 @@ class _EditorScreenState extends State<EditorScreen> {
     final Rect visibleInChildSpace = Rect.fromLTRB(tl.x, tl.y, br.x, br.y);
 
     // Find video position in child space (initially centered)
-    final double videoAR = _videoController!.value.aspectRatio;
-    
-    // The child of InteractiveViewer is a Center widget
-    // InteractiveViewer matches the Viewport size
+    // The child of InteractiveViewer is a Center widget with an AspectRatio video.
     double videoW, videoH;
     if (viewportW / viewportH > videoAR) {
       videoH = viewportH;
@@ -618,16 +695,38 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  void _startExport() {
-    // 1. Save state of current video (Visuals only)
-    _saveCurrentVideoState();
-    
-    // 2. Sync GLOBAL Audio settings to ALL clips
-    // Since Audio is a global timeline feature in this app
+  Future<void> _startExport() async {
+    // 1. Apply the same global transform to ALL videos.
+    // 2. Compute per-video cropRect from the global transform using that video's aspect ratio.
+    final Matrix4 globalTransform = Matrix4.copy(_transformController.value);
+
+    for (int i = 0; i < _videoSettings.length; i++) {
+      final setting = _videoSettings[i];
+
+      // Ensure metadata is available to compute the correct crop rect for this video's aspect ratio.
+      if (setting.metadata == null) {
+        try {
+          final meta = await MetadataService.getMetadata(setting.videoPath);
+          if (meta != null) {
+            setting.metadata = meta;
+          }
+        } catch (_) {}
+      }
+
+      final double videoAR = (setting.metadata != null && setting.metadata!.height > 0)
+          ? (setting.metadata!.width / setting.metadata!.height)
+          : (_videoController?.value.aspectRatio ?? 1.0);
+
+      setting.transform = Matrix4.copy(globalTransform);
+      setting.cropRect = _getPreciseCropRectForAspectRatio(videoAR);
+      setting.viewportSize = _viewportSize;
+    }
+
+    // Sync GLOBAL Audio settings to ALL clips (Audio is a global timeline feature in this app).
     for (var setting in _videoSettings) {
-       setting.audioPath = _audioPath;
-       setting.audioMode = _audioMode;
-       setting.isMuted = _isMuted;
+      setting.audioPath = _audioPath;
+      setting.audioMode = _audioMode;
+      setting.isMuted = _isMuted;
     }
     
     // Pause video to prevent audio leak during export

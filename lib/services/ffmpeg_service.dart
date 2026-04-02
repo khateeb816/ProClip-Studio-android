@@ -207,6 +207,7 @@ class FFMpegService {
       required VideoSettings settings,
       required int outputHeight,
       int? outputWidth,
+      String? audioPathOverride,
   }) async {
       // 1. Capability & Metadata Check
       final meta = settings.metadata ?? await getVideoMetadata(inputPath);
@@ -244,7 +245,7 @@ class FFMpegService {
           cropRect: settings.cropRect,
           targetHeight: targetH,
           targetWidth: outputWidth,
-          audioPath: settings.audioPath,
+          audioPath: audioPathOverride ?? settings.audioPath,
           audioMode: settings.audioMode,
           // Only mute when the user explicitly requested it via settings.
           // Normal clips (no custom audio path) should preserve their original audio.
@@ -309,17 +310,23 @@ class FFMpegService {
     String? audioMode, // mix, background, original
     bool isMuted = false,
   }) async {
+      final String durStr = duration.toStringAsFixed(3);
+      final bool useBgm = audioPath != null && !isMuted && (audioMode == "mix" || audioMode == "background");
       List<String> cmd = [
         "-y",
         "-ss", start.toStringAsFixed(3),
         "-i", inputPath,
       ];
 
-      if (audioPath != null) {
-        cmd.addAll(["-i", audioPath]);
+      // Only include BGM as an input when it is actually used.
+      if (useBgm) {
+        // Deterministic:
+        // - explicitly seek BGM to 0:00 for every clip (avoid any option bleed)
+        // - loop indefinitely, then trim to the exact clip duration in filters below
+        cmd.addAll(["-stream_loop", "-1", "-ss", "0", "-i", audioPath]);
       }
 
-      cmd.addAll(["-t", duration.toStringAsFixed(3)]);
+      cmd.addAll(["-t", durStr]);
 
       // CRITICAL: Use scale=iw:ih as the VERY FIRST filter to absorb HEVC decoder reinit signals.
       //
@@ -413,24 +420,31 @@ class FFMpegService {
          // No audio — suppress audio stream entirely
          cmd.addAll(["-an"]);
       } else {
-         if (audioPath != null && (audioMode == "mix" || audioMode == "background")) {
-             if (audioMode == "mix") {
-                cmd.addAll([
-                  "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first[a]",
-                  "-map", "0:v",
-                  "-map", "[a]"
-                ]);
-             } else {
-                cmd.addAll([
-                  "-map", "0:v",
-                  "-map", "1:a",
-                  "-shortest"
-                ]);
-             }
-         } else {
-             // Keep original video + audio
-             cmd.addAll(["-map", "0:v", "-map", "0:a?"]);
-         }
+        if (useBgm) {
+          // Deterministic BGM: trim to exactly `duration` and reset PTS so every clip starts at 0:00.
+          if (audioMode == "mix") {
+            cmd.addAll([
+              "-filter_complex",
+              "[0:a]asetpts=PTS-STARTPTS,atrim=end=$durStr[a0];"
+              "[1:a]atrim=end=$durStr,asetpts=PTS-STARTPTS[bgm];"
+              // Keep output running for the longer input (usually BGM), avoiding early termination
+              "[a0][bgm]amix=inputs=2:duration=longest:dropout_transition=0[a]",
+              "-map", "0:v",
+              "-map", "[a]"
+            ]);
+          } else {
+            // Background: video only + deterministic BGM segment
+            cmd.addAll([
+              "-filter_complex",
+              "[1:a]atrim=end=$durStr,asetpts=PTS-STARTPTS[bgm]",
+              "-map", "0:v",
+              "-map", "[bgm]"
+            ]);
+          }
+        } else {
+          // Keep original video + audio (no background music)
+          cmd.addAll(["-map", "0:v", "-map", "0:a?"]);
+        }
          // Audio codec — only when audio is being included
          cmd.addAll(["-c:a", "aac", "-b:a", "128k"]);
       }
@@ -480,8 +494,75 @@ class FFMpegService {
         outPath
      ];
      
-     await FFmpegKit.executeWithArguments(cmd);
+      await FFmpegKit.executeWithArguments(cmd);
      if (await File(outPath).exists()) return outPath;
+     return null;
+  }
+
+  /// Generate a deterministic BGM segment of exactly `duration` seconds.
+  /// - Always starts from 0:00 of the source audio
+  /// - Loops seamlessly if source is shorter
+  /// - Trims exactly to `duration` (no trailing silence)
+  static Future<String?> generateBgmSegment({
+    required String audioPath,
+    required double duration,
+    required String outputPath,
+  }) async {
+    final String durStr = duration.toStringAsFixed(3);
+
+    final cmd = [
+      "-y",
+      "-stream_loop", "-1",
+      "-i", audioPath,
+      "-t", durStr,
+      "-vn",
+      "-filter:a", "atrim=end=$durStr,asetpts=PTS-STARTPTS",
+      "-c:a", "aac",
+      "-b:a", "192k",
+      outputPath,
+    ];
+
+    print("🎵 Generating BGM Segment: ${cmd.join(' ')}");
+    final session = await FFmpegKit.executeWithArguments(cmd);
+    final returnCode = await session.getReturnCode();
+
+    if (ReturnCode.isSuccess(returnCode)) {
+      final file = File(outputPath);
+      if (await file.exists() && (await file.length()) > 1000) {
+        return outputPath;
+      }
+    }
+
+    return null;
+  }
+
+  /// Helper: Generate Proxy for HEVC
+  static Future<String?> generateHEVCProxy(String videoPath) async {
+     try {
+       final dir = await getExternalStorageDirectory(); 
+       final outDir = dir ?? await getApplicationDocumentsDirectory();
+       final outPath = "${outDir.path}/proxy_${DateTime.now().millisecondsSinceEpoch}.mp4";
+       
+       // Transcode to H.264 at a fast preset and lower resolution for smooth preview
+       final cmd = [
+          "-y",
+          "-i", videoPath,
+          "-vf", "scale=-2:720",
+          "-c:v", "libx264",
+          "-preset", "ultrafast",
+          "-crf", "28",
+          "-c:a", "copy",
+          outPath
+       ];
+       
+       print("🚀 Generating HEVC Proxy: ${cmd.join(' ')}");
+       final session = await FFmpegKit.executeWithArguments(cmd);
+       if (ReturnCode.isSuccess(await session.getReturnCode())) {
+         return outPath;
+       }
+     } catch (e) {
+       print("❌ HEVC Proxy Generation Failed: $e");
+     }
      return null;
   }
 
@@ -542,7 +623,7 @@ class FFMpegService {
         int height = 720;
         double fps = 30.0;
         int bitrate = 1000000;
-        String codec = "h264";
+        String codec = "unknown";
 
         for (var stream in info.getStreams()) {
           if (stream.getType() == "video") {
@@ -562,6 +643,25 @@ class FFMpegService {
             break;
           }
         }
+
+        // Resolve the actual codec name for HEVC/H.265 detection.
+        // Note: FFprobeKit's higher-level stream getters vary by version, so we use
+        // an explicit ffprobe query to keep this robust across iOS/Android builds.
+        try {
+          final codecSession = await FFprobeKit.execute(
+              '-v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$path"');
+          final codecOut = (await codecSession.getOutput())?.trim().toLowerCase();
+
+          if (codecOut != null && codecOut.isNotEmpty) {
+            codec = codecOut;
+          }
+
+          // Map common HEVC aliases to a consistent string so editor logic can detect it.
+          if (codec == "hvc1" || codec == "hev1") {
+            codec = "hevc";
+          }
+        } catch (_) {}
+
         return VideoMetadata(
           duration: duration,
           width: width,

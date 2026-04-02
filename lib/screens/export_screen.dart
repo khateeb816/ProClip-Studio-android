@@ -55,6 +55,10 @@ class _ExportScreenState extends State<ExportScreen> {
   double _currentClipProgress = 0.0;
   bool _isComplete = false;
   bool _isCancelling = false;
+
+  // Cache deterministic BGM segments by clip duration.
+  // Key is `duration.toStringAsFixed(3)` to match FFmpeg trimming precision.
+  final Map<String, String> _bgmSegmentCache = {};
   
   // Replaced VideoPlayer with Thumbnail File
   File? _currentThumbnail;
@@ -135,6 +139,38 @@ class _ExportScreenState extends State<ExportScreen> {
         ],
       ),
     );
+  }
+
+  Future<String?> _getOrCreateBgmSegment({
+    required String workBaseDir,
+    required String audioPath,
+    required double duration,
+  }) async {
+    final durKey = duration.toStringAsFixed(3);
+    final safeKey = durKey.replaceAll('.', '_');
+
+    final cached = _bgmSegmentCache[durKey];
+    if (cached != null) return cached;
+
+    final outPath = "$workBaseDir/bgm_${safeKey}.m4a";
+    final outFile = File(outPath);
+    if (await outFile.exists()) {
+      _bgmSegmentCache[durKey] = outPath;
+      return outPath;
+    }
+
+    final segmentPath = await FFMpegService.enqueueJob(() {
+      return FFMpegService.generateBgmSegment(
+        audioPath: audioPath,
+        duration: double.parse(durKey),
+        outputPath: outPath,
+      );
+    });
+
+    if (segmentPath != null) {
+      _bgmSegmentCache[durKey] = segmentPath;
+    }
+    return segmentPath;
   }
 
   Future<void> _startBatchPipeline() async {
@@ -256,6 +292,21 @@ class _ExportScreenState extends State<ExportScreen> {
                );
             }
 
+            // Prepare deterministic BGM segment once per unique clip duration.
+            // Important: do this OUTSIDE the `enqueueJob` closure to avoid nested queue deadlocks.
+            String? audioPathOverride;
+            final bool shouldUseBgm = widget.audioPath != null &&
+                (widget.audioMode == "mix" || widget.audioMode == "background") &&
+                !settings.isMuted;
+
+            if (shouldUseBgm) {
+              audioPathOverride = await _getOrCreateBgmSegment(
+                workBaseDir: workBaseDir,
+                audioPath: widget.audioPath!,
+                duration: duration,
+              );
+            }
+
             // Execute via Queue (Sequential)
             final resultPath = await FFMpegService.enqueueJob(() async {
                 String? resultPath;
@@ -322,6 +373,7 @@ class _ExportScreenState extends State<ExportScreen> {
                    settings: settings, 
                    outputHeight: widget.exportHeight,
                    outputWidth: outWidth, 
+                   audioPathOverride: audioPathOverride,
                 );
                 
                 exportComplete = true;
