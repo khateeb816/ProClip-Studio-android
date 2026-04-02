@@ -1,7 +1,7 @@
 name: video_clipper_app
 description: A high-performance video clipper application.
 publish_to: 'none'
-version: 1.2.2+1
+version: 1.2.4+1
 
 environment:
   sdk: '>=3.2.0 <4.0.0'

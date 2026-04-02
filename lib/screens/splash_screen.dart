@@ -7,6 +7,7 @@ import '../services/video_cache_manager.dart';
 import '../services/audio_cache_manager.dart';
 import 'home_screen.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import '../services/app_update/update_manager.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -119,6 +120,9 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       
       // 3. Navigate to Home
       if (mounted) {
+        // Check updates without blocking if Firestore/API fails.
+        final proceed = await UpdateManager.instance.checkForUpdatesOnLaunch(context);
+        if (!proceed) return;
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const HomeScreen()),
         );

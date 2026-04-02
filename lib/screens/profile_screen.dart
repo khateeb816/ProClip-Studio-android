@@ -153,28 +153,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
           backgroundColor: Colors.transparent,
           elevation: 0,
           shape: const CircleBorder(),
-          child: SizedBox(
-            width: 52,
-            height: 52,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Positioned(
-                  right: 1,
-                  bottom: 2,
-                  child: FaIcon(
-                    FontAwesomeIcons.whatsapp,
-                    color: Colors.black.withOpacity(0.22),
-                    size: 36,
-                  ),
-                ),
-                const FaIcon(
-                  FontAwesomeIcons.whatsapp,
-                  color: Colors.white,
-                  size: 34,
-                ),
-              ],
-            ),
+          child: Icon(
+            FontAwesomeIcons.whatsapp,
+            color: Colors.white,
+            size: 34,
+            shadows: const [
+              Shadow(
+                color: Colors.black26,
+                blurRadius: 10,
+                offset: Offset(0, 4),
+              ),
+            ],
           ),
         ),
       ),
@@ -330,12 +319,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           Icons.email_outlined,
                           'Email',
                           user?.email ?? 'Not set',
-                        ),
-                        const Divider(height: 32, color: Colors.grey),
-                        _buildInfoRow(
-                          Icons.verified_user_outlined,
-                          'Email Verified',
-                          user?.emailVerified == true ? 'Yes' : 'No',
                         ),
                         const Divider(height: 32, color: Colors.grey),
                         _buildInfoRow(
