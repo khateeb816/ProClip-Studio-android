@@ -119,11 +119,64 @@ class _ProfileScreenState extends State<ProfileScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _contactSupport,
-        backgroundColor: const Color(0xFF25D366),
-        elevation: 4,
-        child: const FaIcon(FontAwesomeIcons.whatsapp, color: Colors.white, size: 36),
+      floatingActionButton: Container(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+            colors: [
+              Color(0xFF25D366),
+              Color(0xFF00D4FF),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.18),
+            width: 1.2,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF25D366).withOpacity(0.35),
+              blurRadius: 22,
+              spreadRadius: 6,
+            ),
+            const BoxShadow(
+              color: Colors.black26,
+              blurRadius: 10,
+              offset: Offset(0, 6),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(3),
+        child: FloatingActionButton(
+          onPressed: _contactSupport,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          shape: const CircleBorder(),
+          child: SizedBox(
+            width: 52,
+            height: 52,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Positioned(
+                  right: 1,
+                  bottom: 2,
+                  child: FaIcon(
+                    FontAwesomeIcons.whatsapp,
+                    color: Colors.black.withOpacity(0.22),
+                    size: 36,
+                  ),
+                ),
+                const FaIcon(
+                  FontAwesomeIcons.whatsapp,
+                  color: Colors.white,
+                  size: 34,
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
       body: _isLoading
           ? const Center(

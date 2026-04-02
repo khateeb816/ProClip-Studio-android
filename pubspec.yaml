@@ -1,7 +1,7 @@
 name: video_clipper_app
 description: A high-performance video clipper application.
 publish_to: 'none'
-version: 1.2.0+1
+version: 1.2.2+1
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -47,6 +47,8 @@ dependencies:
   google_sign_in: ^6.2.2
   cloud_firestore: ^5.5.2
   url_launcher: ^6.3.2
+  cloud_functions: ^5.6.2
+  package_info_plus: ^9.0.1
 
 dev_dependencies:
   flutter_test:
