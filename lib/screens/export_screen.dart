@@ -105,9 +105,9 @@ class _ExportScreenState extends State<ExportScreen> {
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E1E),
-        title: const Text("Export Limit Reached", style: TextStyle(color: Colors.white)),
+        title: const Text("Daily Export Limit Reached", style: TextStyle(color: Colors.white)),
         content: const Text(
-          "You have reached the free limit of 10 exported clips. Please upgrade to Premium to continue exporting unlimited clips.",
+          "You have reached your daily free limit of 10 exported clips. Please wait until tomorrow or upgrade to Premium to continue exporting unlimited clips.",
           style: TextStyle(color: Colors.grey),
         ),
         actions: [
@@ -238,30 +238,8 @@ class _ExportScreenState extends State<ExportScreen> {
         for (int c = 0; c < plan.length; c++) {
             if (!mounted || FFMpegService.isCancelled || _isCancelling) break;
             
-            // Check Export Limit for Free Users
-            final userData = await _authService.getUserData();
-            final status = userData?['subscriptionStatus'] as String? ?? 'free';
-            final exportedCount = userData?['clipsExported'] as int? ?? 0;
-            
-            bool isLimitReached = false;
-
-            if (status == 'free') {
-              if (exportedCount >= 10) {
-                isLimitReached = true;
-              } else {
-                // Check device-level global free limit
-                try {
-                  final deviceId = await _authService.getDeviceId();
-                  final deviceDoc = await FirebaseFirestore.instance.collection('devices').doc(deviceId).get();
-                  final globalFreeExported = deviceDoc.data()?['freeClipsExported'] as int? ?? 0;
-                  if (globalFreeExported >= 10) {
-                    isLimitReached = true;
-                  }
-                } catch (e) {
-                  print("Error checking device export limit: $e");
-                }
-              }
-            }
+            // Check Daily Export Limit for Free Users
+            final isLimitReached = await _authService.isExportLimitReached();
 
             if (isLimitReached) {
               if (mounted) {

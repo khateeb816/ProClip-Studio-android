@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -187,8 +189,10 @@ class AuthService {
         'subscriptionExpiry': null, // No expiry for free users
         'isActive': true, // Account is active by default
         'boundDeviceId': deviceId, // For Premium & Free Device Integrity
-        'clipsExported': maxExported, // Shared device limit
-        'clipsUploaded': maxUploaded, // Shared device limit
+        'clipsExported': maxExported, // Legacy total limit tracking
+        'clipsUploaded': maxUploaded, // Legacy total limit tracking
+        'dailyClipsExported': 0, // Daily limit tracking
+        'lastExportDate': '', // Daily limit tracking
         'createdAt': FieldValue.serverTimestamp(),
         'lastLogin': FieldValue.serverTimestamp(),
       });
@@ -266,15 +270,47 @@ class AuthService {
     }
   }
 
-  // Increment clip statistics
+  // Get current date from a reliable online source (UTC YYYY-MM-DD)
+  Future<String> _getNetworkDate() async {
+    try {
+      // Use a reliable time API
+      final response = await http.get(Uri.parse('https://worldtimeapi.org/api/timezone/Etc/UTC')).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final datetime = data['datetime'] as String;
+        return datetime.substring(0, 10); // YYYY-MM-DD
+      }
+    } catch (e) {
+      print('Network time error, falling back to UTC: $e');
+    }
+    // Fallback to local UTC if network fails
+    return DateTime.now().toUtc().toString().substring(0, 10);
+  }
+
+  // Increment clip statistics with daily limits
   Future<void> incrementClipStats({bool isExport = false, bool isUpload = false}) async {
     try {
       final uid = currentUser?.uid;
       if (uid == null) return;
 
+      final today = await _getNetworkDate();
+      final userDoc = await _firestore.collection('users').doc(uid).get();
+      final userData = userDoc.data();
+      
       final updates = <String, dynamic>{};
-      if (isExport) updates['clipsExported'] = FieldValue.increment(1);
       if (isUpload) updates['clipsUploaded'] = FieldValue.increment(1);
+      
+      if (isExport) {
+        updates['clipsExported'] = FieldValue.increment(1);
+        
+        final lastExportDate = userData?['lastExportDate'] as String?;
+        if (lastExportDate != today) {
+          updates['dailyClipsExported'] = 1;
+          updates['lastExportDate'] = today;
+        } else {
+          updates['dailyClipsExported'] = FieldValue.increment(1);
+        }
+      }
 
       if (updates.isNotEmpty) {
         await _firestore.collection('users').doc(uid).update(updates);
@@ -282,13 +318,25 @@ class AuthService {
       
       // Update global device export count for Free users
       if (isExport) {
-         final doc = await _firestore.collection('users').doc(uid).get();
-         if (doc.exists && doc.data()?['subscriptionStatus'] == 'free') {
+         final status = userData?['subscriptionStatus'] as String? ?? 'free';
+         if (status == 'free') {
              final deviceId = await getDeviceId();
-             await _firestore.collection('devices').doc(deviceId).set({
-                 'freeClipsExported': FieldValue.increment(1),
-                 'lastUpdated': FieldValue.serverTimestamp(),
-             }, SetOptions(merge: true));
+             final deviceDoc = await _firestore.collection('devices').doc(deviceId).get();
+             final deviceData = deviceDoc.data();
+             
+             final deviceLastExportDate = deviceData?['lastExportDate'] as String?;
+             final deviceUpdates = <String, dynamic>{
+                'lastUpdated': FieldValue.serverTimestamp(),
+             };
+             
+             if (deviceLastExportDate != today) {
+                deviceUpdates['freeClipsExportedDaily'] = 1;
+                deviceUpdates['lastExportDate'] = today;
+             } else {
+                deviceUpdates['freeClipsExportedDaily'] = FieldValue.increment(1);
+             }
+             
+             await _firestore.collection('devices').doc(deviceId).set(deviceUpdates, SetOptions(merge: true));
          }
       }
     } catch (e) {
@@ -345,6 +393,46 @@ class AuthService {
         } else {
             throw 'This Premium account is bound to another device. Please contact Admin to remove the old device.';
         }
+    }
+  }
+  Future<bool> isExportLimitReached() async {
+    try {
+      final uid = currentUser?.uid;
+      if (uid == null) return true;
+
+      final userData = await getUserData(uid);
+      final status = (userData?['subscriptionStatus'] as String? ?? 'free').toLowerCase();
+      
+      // Premium/Active users have no limits
+      if (status == 'premium' || status == 'active') return false;
+
+      final today = await _getNetworkDate();
+      
+      // 1. Check User-level daily limit
+      final lastExportDate = userData?['lastExportDate'] as String?;
+      final dailyExported = userData?['dailyClipsExported'] as int? ?? 0;
+      
+      if (lastExportDate == today && dailyExported >= 10) {
+        return true;
+      }
+
+      // 2. Check Device-level daily limit (prevents bypass via multiple accounts)
+      final deviceId = await getDeviceId();
+      final deviceDoc = await _firestore.collection('devices').doc(deviceId).get();
+      if (deviceDoc.exists) {
+        final deviceData = deviceDoc.data();
+        final deviceLastExportDate = deviceData?['lastExportDate'] as String?;
+        final deviceDailyExported = deviceData?['freeClipsExportedDaily'] as int? ?? 0;
+        
+        if (deviceLastExportDate == today && deviceDailyExported >= 10) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch (e) {
+      print('Error checking export limit: $e');
+      return false; // Default to allow on error to avoid trapping users
     }
   }
 }
