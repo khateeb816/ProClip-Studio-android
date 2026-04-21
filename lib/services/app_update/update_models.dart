@@ -38,13 +38,3 @@ class AndroidAppConfig {
   }
 }
 
-class UpdateDecision {
-  final AndroidAppConfig config;
-  final bool shouldForce;
-
-  const UpdateDecision({
-    required this.config,
-    required this.shouldForce,
-  });
-}
-

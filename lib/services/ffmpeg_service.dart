@@ -242,13 +242,11 @@ class FFMpegService {
           outputPath: outputPath,
           start: start,
           duration: duration,
-          cropRect: settings.cropRect,
+          settings: settings, // Pass full settings
           targetHeight: targetH,
           targetWidth: outputWidth,
           audioPath: audioPathOverride ?? settings.audioPath,
           audioMode: settings.audioMode,
-          // Only mute when the user explicitly requested it via settings.
-          // Normal clips (no custom audio path) should preserve their original audio.
           isMuted: settings.isMuted,
       );
   }
@@ -303,7 +301,7 @@ class FFMpegService {
     required String outputPath,
     required double start,
     required double duration,
-    Rect? cropRect,
+    required VideoSettings settings, // Use settings directly
     int targetHeight = 1280,
     int? targetWidth,
     String? audioPath,
@@ -314,8 +312,8 @@ class FFMpegService {
       final bool useBgm = audioPath != null && !isMuted && (audioMode == "mix" || audioMode == "background");
       List<String> cmd = [
         "-y",
-        "-ss", start.toStringAsFixed(3),
         "-i", inputPath,
+        "-ss", start.toStringAsFixed(3),
       ];
 
       // Only include BGM as an input when it is actually used.
@@ -336,81 +334,83 @@ class FFMpegService {
       //
       // WHY scale WORKS and others don't:
       //   - setparams, format, crop: NOT reinit-safe. They crash or propagate the reinit.
-      //   - scale filter: UNIQUELY designed with auto_scale support — it handles property
-      //     changes gracefully by reinitializing itself without failing or propagating.
-      //
-      // By placing scale=iw:ih first, it silently absorbs every reinit from the decoder.
-      // All subsequent filters (crop, scale again, etc.) only ever see stable frames.
-      // format=yuv420p then normalizes to a clean, consistent pixel format.
-      String vf = "scale=iw:ih:flags=fast_bilinear,format=yuv420p";
-
-      // Resolve Input Dimensions for detailed crop calculation
+      // Resolve Input Dimensions and Rotation
       int iw = 1280; // Default fallback
       int ih = 720;
+      int rotation = 0;
       try {
         final meta = await getVideoMetadata(inputPath);
         if (meta != null) {
           iw = meta.width;
           ih = meta.height;
+          rotation = meta.rotation;
         }
       } catch (e) {
         print("⚠️ Failed to get metadata for crop calc: $e");
       }
 
-      // Crop First (if needed)
-      bool needsCrop = false;
-      String cropFilter = "";
+      double iw_d = iw.toDouble();
+      double ih_d = ih.toDouble();
       
-      if (cropRect != null) {
-         // Tolerance check (allow 1% margin of error for "full screen")
-         if (cropRect.width < 0.99 || cropRect.height < 0.99 || cropRect.left > 0.01 || cropRect.top > 0.01) {
-            needsCrop = true;
-            
-            // DYNAMIC FFmpeg EXPRESSIONS (Robut against HEVC decoder re-init on bad frames)
-            String wStr = cropRect.width.toStringAsFixed(4);
-            String hStr = cropRect.height.toStringAsFixed(4);
-            String xStr = cropRect.left.toStringAsFixed(4);
-            String yStr = cropRect.top.toStringAsFixed(4);
-            
-            // To ensure mod-2 macroblock alignment (required for some encoders):
-            // crop='trunc(iw*w/2)*2':'trunc(ih*h/2)*2':'trunc(iw*x/2)*2':'trunc(ih*y/2)*2'
-            String cw = "trunc(iw*$wStr/2)*2";
-            String ch = "trunc(ih*$hStr/2)*2";
-            String cx = "trunc(iw*$xStr/2)*2";
-            String cy = "trunc(ih*$yStr/2)*2";
-
-            cropFilter = "crop=$cw:$ch:$cx:$cy";
-         }
-      }
-
-      if (needsCrop) {
-         if (vf.isNotEmpty) vf += ","; // comma after format=yuv420p
-         vf += cropFilter;
-         print("✂️ Applying Crop (Absolute): $cropFilter (Source: ${iw}x${ih})");
-      } else {
-         print("ℹ️ Skipping Crop (Full Screen)");
-      }
-      
+      // Calculate output canvas dimensions
       int alignedHeight = _alignToMod16(targetHeight);
+      double videoAR = settings.displayAR ?? (iw_d / ih_d);
       
-      if (targetWidth != null) {
-           int alignedWidth = _alignToMod16(targetWidth);
-           if (vf.isNotEmpty) vf += ",";
-           
-           // If we have applied a custom crop (Zoom), we likely want to FILL the target
-           // preventing black bars due to slight viewport AR mismatches.
-           if (vf.contains("crop=")) {
-              // ASPECT FILL (Cover)
-              vf += "scale=$alignedWidth:$alignedHeight:force_original_aspect_ratio=increase,crop=$alignedWidth:$alignedHeight";
-           } else {
-              // ASPECT FIT (Pad) - Default behavior for full videos
-              vf += "scale=$alignedWidth:$alignedHeight:force_original_aspect_ratio=decrease,pad=$alignedWidth:$alignedHeight:(ow-iw)/2:(oh-ih)/2:color=black";
-           }
+      // If targetWidth is null (e.g. "Original" ratio), calculate it from source to prevent stretching.
+      int alignedWidth = targetWidth != null 
+          ? _alignToMod16(targetWidth) 
+          : _alignToMod16((alignedHeight * videoAR).round());
+
+      // BUILD FILTER CHAIN
+      String vf = "";
+
+      if (settings.viewportSize.width > 0 && settings.viewportSize.height > 0) {
+        // 1. Calculate UI constants
+        double viewportW = settings.viewportSize.width;
+        double viewportH = settings.viewportSize.height;
+        double viewportAR = viewportW / viewportH;
+
+        double vW_ui, vH_ui;
+        if (viewportAR > videoAR) {
+          vH_ui = viewportH;
+          vW_ui = vH_ui * videoAR;
+        } else {
+          vW_ui = viewportW;
+          vH_ui = vW_ui / videoAR;
+        }
+
+        double offX_ui = (viewportW - vW_ui) / 2;
+        double offY_ui = (viewportH - vH_ui) / 2;
+        double esf = alignedHeight / viewportH;
+
+        // 2. Calculate Final Placement (Output Pixels)
+        double s = settings.scale;
+        int zoomW = (vW_ui * s * esf).round() & ~1;
+        int zoomH = (vH_ui * s * esf).round() & ~1;
+
+        double finalX = ((offX_ui * s) + settings.tx) * esf;
+        double finalY = ((offY_ui * s) + settings.ty) * esf;
+
+        // 3. Mapping: If X/Y is negative, we crop. If positive, we pad.
+        int cropX = finalX < 0 ? (-finalX).round() & ~1 : 0;
+        int cropY = finalY < 0 ? (-finalY).round() & ~1 : 0;
+        int padX = finalX > 0 ? (finalX).round() & ~1 : 0;
+        int padY = finalY > 0 ? (finalY).round() & ~1 : 0;
+
+        // Dimensions of the visible part of the zoomed video on the output canvas
+        int visibleW = (zoomW - cropX).clamp(0, alignedWidth - padX) & ~1;
+        int visibleH = (zoomH - cropY).clamp(0, alignedHeight - padY) & ~1;
+
+        // Build the chain: Scale -> Crop (the off-screen parts) -> Pad (to viewport size)
+        if (vf.isNotEmpty) vf += ",";
+        vf += "scale=$zoomW:$zoomH,crop=$visibleW:$visibleH:$cropX:$cropY,pad=$alignedWidth:$alignedHeight:$padX:$padY:color=black";
       } else {
-           if (vf.isNotEmpty) vf += ",";
-           vf += "scale=-2:$alignedHeight";
+        if (vf.isNotEmpty) vf += ",";
+        vf += "scale=-2:$alignedHeight";
       }
 
+      // 4. Force Square Pixels (SAR 1:1) to prevent stretching in players
+      vf += ",setsar=1/1,format=yuv420p";
       cmd.addAll(["-vf", vf]);
 
       // Audio Logic
@@ -624,18 +624,32 @@ class FFMpegService {
         double fps = 30.0;
         int bitrate = 1000000;
         String codec = "unknown";
+        int rotation = 0;
 
         for (var stream in info.getStreams()) {
           if (stream.getType() == "video") {
             width = stream.getWidth() ?? 1280;
             height = stream.getHeight() ?? 720;
+
+            try {
+              final rotationSession = await FFprobeKit.execute(
+                  '-v error -select_streams v:0 -show_entries stream_tags=rotate -of default=noprint_wrappers=1:nokey=1 "$path"');
+              final rotationOut = (await rotationSession.getOutput())?.trim();
+              rotation = int.tryParse(rotationOut ?? "0") ?? 0;
+              if (rotation == 90 || rotation == 270 || rotation == -90 || rotation == -270) {
+                final int temp = width;
+                width = height;
+                height = temp;
+                print("🔄 Swapping dimensions due to $rotation degree rotation: ${width}x${height}");
+              }
+            } catch (_) {}
+
             final rFrameRate = stream.getRealFrameRate();
             if (rFrameRate != null) {
                final parts = rFrameRate.split('/');
                if (parts.length == 2) {
-                  double num = double.tryParse(parts[0]) ?? 0;
-                  double den = double.tryParse(parts[1]) ?? 1;
-                  if (den != 0) fps = num/den;
+                  final den = double.tryParse(parts[1]) ?? 1.0;
+                  fps = (double.tryParse(parts[0]) ?? 30.0) / den;
                } else {
                   fps = double.tryParse(rFrameRate) ?? 30.0;
                }
@@ -669,6 +683,7 @@ class FFMpegService {
           fps: fps,
           bitrate: bitrate,
           codec: codec,
+          rotation: rotation,
         );
       }
     } catch (e) {

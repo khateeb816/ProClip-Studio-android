@@ -63,17 +63,23 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                Permission.audio,
             ].request();
             
-            if (statuses[Permission.videos]?.isGranted == true && 
-                statuses[Permission.photos]?.isGranted == true &&
-                statuses[Permission.audio]?.isGranted == true) {
+            bool isVideoGranted = statuses[Permission.videos]?.isGranted == true;
+            bool isPhotoGranted = statuses[Permission.photos]?.isGranted == true;
+            bool isAudioGranted = statuses[Permission.audio]?.isGranted == true;
+
+            if (isVideoGranted && isPhotoGranted && isAudioGranted) {
                permissionGranted = true;
             } else {
                // Detail which ones failed for debugging/user info
                final denied = statuses.entries
-                 .where((e) => !e.value.isGranted)
+                 .where((e) => !(e.value.isGranted))
                  .map((e) => e.key.toString().split('.').last)
                  .join(", ");
                debugPrint("❌ Missing permissions: $denied");
+               
+               if (statuses[Permission.videos]?.isLimited == true || statuses[Permission.photos]?.isLimited == true) {
+                  await PhotoManager.openSetting();
+               }
             }
          } else {
             if (mounted) setState(() => _statusMessage = "Requesting Storage...");
@@ -82,6 +88,8 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
             final status = await Permission.storage.request();
             if (status.isGranted) {
                permissionGranted = true;
+            } else if (status.isLimited) {
+               await PhotoManager.openSetting();
             }
          }
       } else {
@@ -90,6 +98,8 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
          final ps = await PhotoManager.requestPermissionExtend();
          if (ps.isAuth || ps.hasAccess) {
             permissionGranted = true;
+         } else if (ps == PermissionState.limited) {
+            await PhotoManager.openSetting();
          }
       }
 
@@ -106,7 +116,6 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       if (mounted) setState(() => _statusMessage = "Loading assets...");
       
       // Critical: Tell PhotoManager we already handled permissions to avoid double-check hang
-      PhotoManager.setIgnorePermissionCheck(true);
       
       // Initialize both caches
       await Future.wait([

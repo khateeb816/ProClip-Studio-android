@@ -9,6 +9,9 @@ import 'clips_screen.dart';
 import 'settings_screen.dart';
 import 'profile_screen.dart';
 import '../services/clip_repository.dart';
+import '../services/admin_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -31,6 +34,113 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     ClipRepository.init(); // Initialize repo
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkAnnouncement();
+    });
+  }
+
+  Future<void> _checkAnnouncement() async {
+    try {
+      final announcement = await AdminService().getAnnouncement();
+      debugPrint("📢 Announcement fetch: $announcement");
+      
+      if (announcement != null && announcement['isActive'] == true) {
+        final deadlineRaw = announcement['deadline'];
+        if (deadlineRaw == null) return;
+        
+        final deadline = (deadlineRaw as Timestamp).toDate();
+        if (deadline.isAfter(DateTime.now())) {
+          final prefs = await SharedPreferences.getInstance();
+          
+          // Use createdAt as a unique ID if message is the same
+          final currentMessage = announcement['message'] as String? ?? '';
+          final createdAtRaw = announcement['createdAt'];
+          final String announcementId = createdAtRaw != null 
+              ? (createdAtRaw as Timestamp).millisecondsSinceEpoch.toString() 
+              : currentMessage;
+
+          final lastSeenId = prefs.getString('last_announcement_id') ?? '';
+          
+          debugPrint("📢 Checking: currentId=$announcementId, lastId=$lastSeenId");
+          
+          if (lastSeenId != announcementId) {
+            if (!mounted) return;
+            _showAnnouncementPopup(currentMessage);
+            await prefs.setString('last_announcement_id', announcementId);
+          }
+        } else {
+          debugPrint("📢 Announcement expired at $deadline");
+        }
+      } else {
+        debugPrint("📢 No active announcement found");
+      }
+    } catch (e) {
+      debugPrint("❌ Error checking announcement: $e");
+    }
+  }
+
+  void _showAnnouncementPopup(String message) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Dismiss',
+      transitionDuration: const Duration(milliseconds: 400),
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return Center(
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 24),
+              padding: const EdgeInsets.all(32),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E).withValues(alpha: 0.95),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.5), width: 1.5),
+                boxShadow: [
+                  BoxShadow(color: Colors.cyanAccent.withValues(alpha: 0.15), blurRadius: 30, spreadRadius: 5),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.campaign, size: 56, color: Colors.cyanAccent),
+                  const SizedBox(height: 16),
+                  const Text('Admin Announcement', 
+                    style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: 1.1)
+                  ),
+                  const SizedBox(height: 16),
+                  Text(message, 
+                    textAlign: TextAlign.center, 
+                    style: TextStyle(color: Colors.grey[300], fontSize: 16, height: 1.4)
+                  ),
+                  const SizedBox(height: 32),
+                  ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.cyanAccent,
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      minimumSize: const Size(double.infinity, 52),
+                      elevation: 8,
+                    ),
+                    child: const Text('GOT IT', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, letterSpacing: 1.2)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        return ScaleTransition(
+          scale: CurvedAnimation(parent: animation, curve: Curves.easeOutBack),
+          child: FadeTransition(
+            opacity: animation,
+            child: child,
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -63,11 +173,22 @@ class _HomeTab extends StatefulWidget {
 
 class _HomeTabState extends State<_HomeTab> {
   String? _customOutputPath;
+  String _appVersion = "";
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    if (mounted) {
+      setState(() {
+        _appVersion = info.version;
+      });
+    }
   }
   
   // Reload settings every time the tab is built/visible to catch updates from SettingsScreen
@@ -235,6 +356,13 @@ class _HomeTabState extends State<_HomeTab> {
                     ),
                   ),
                 ),
+                if (_appVersion.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  Text(
+                    "Version $_appVersion",
+                    style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                  ),
+                ],
               ],
             ),
           ),

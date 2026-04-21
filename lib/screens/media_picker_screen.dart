@@ -44,7 +44,7 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
     if (cached.isNotEmpty) {
       debugPrint("📸 MediaPicker: Using ${cached.length} cached assets");
       setState(() {
-        _assets = cached;
+        _assets = List.from(cached.reversed);
         _isLoading = false;
       });
     } else {
@@ -60,7 +60,7 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
     }
     
     setState(() {
-       _assets = VideoCacheManager().cachedAssets;
+       _assets = List.from(VideoCacheManager().cachedAssets.reversed);
        _isLoading = false;
     });
   }
@@ -208,6 +208,11 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
         title: const Text("Select Videos"),
         backgroundColor: Colors.black,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.perm_media, color: Colors.cyanAccent),
+            tooltip: "Manage Permissions",
+            onPressed: _requestPermissions,
+          ),
           if (_selectedAssets.isNotEmpty)
             TextButton(
               onPressed: _proceedToEditor,
@@ -244,8 +249,21 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
                         ),
                       ),
                     if (_assets.isNotEmpty)
-                      GridView.builder(
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      Column(
+                        children: [
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            color: Colors.blueAccent.withValues(alpha: 0.1),
+                            child: const Text(
+                              "💡 Tip: Select same ratio videos to avoid any glitch in output. If you find anything, feel free to contact.",
+                              style: TextStyle(color: Colors.blueAccent, fontSize: 11),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                          Expanded(
+                            child: GridView.builder(
+                              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: 3,
                           crossAxisSpacing: 2,
                           mainAxisSpacing: 2,
@@ -266,6 +284,14 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
                                   isOriginal: false,
                                   thumbnailSize: const ThumbnailSize.square(200),
                                   fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) {
+                                    return Container(
+                                      color: Colors.grey[900],
+                                      child: const Center(
+                                        child: Icon(Icons.broken_image, color: Colors.grey),
+                                      ),
+                                    );
+                                  },
                                 ),
                                 
                                 // Duration Overlay
@@ -299,8 +325,11 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
                           );
                         },
                       ),
+                    ),
                   ],
                 ),
+              ],
+            ),
     );
   }
 }

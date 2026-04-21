@@ -7,6 +7,9 @@ class VideoSettings {
   // Per-Video Crop & Transform State
   Rect? cropRect; // Normalized
   Matrix4? transform; // For restoring UI state
+  double scale = 1.0;
+  double tx = 0.0;
+  double ty = 0.0;
   Size viewportSize;
   
   // Metadata
@@ -21,6 +24,8 @@ class VideoSettings {
   String audioMode = "mix";
   bool isMuted = false;
   String? thumbnailPath;
+  String aspectRatio = '9:16';
+  double? displayAR;
 
   VideoSettings({
     required this.videoPath,

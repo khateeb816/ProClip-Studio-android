@@ -5,6 +5,7 @@ class VideoMetadata {
   final double fps;
   final int bitrate;
   final String codec;
+  final int rotation;
 
   VideoMetadata({
     required this.duration,
@@ -13,6 +14,7 @@ class VideoMetadata {
     required this.fps,
     required this.bitrate,
     required this.codec,
+    this.rotation = 0,
   });
 
   Map<String, dynamic> toJson() => {
@@ -22,6 +24,7 @@ class VideoMetadata {
     'fps': fps,
     'bitrate': bitrate,
     'codec': codec,
+    'rotation': rotation,
   };
 
   factory VideoMetadata.fromJson(Map<String, dynamic> json) => VideoMetadata(
@@ -31,5 +34,6 @@ class VideoMetadata {
     fps: json['fps'],
     bitrate: json['bitrate'],
     codec: json['codec'],
+    rotation: json['rotation'] ?? 0,
   );
 }

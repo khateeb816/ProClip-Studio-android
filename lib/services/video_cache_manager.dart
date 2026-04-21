@@ -1,5 +1,3 @@
-import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 class VideoCacheManager {
@@ -7,61 +5,77 @@ class VideoCacheManager {
   factory VideoCacheManager() => _instance;
   VideoCacheManager._internal();
 
-  List<AssetEntity> _cachedAssets = [];
-  bool _isInitialized = false;
-  
-  List<AssetEntity> get cachedAssets => _cachedAssets;
-  bool get isInitialized => _isInitialized;
+  List<AssetEntity> _videos = [];
+  bool _initialized = false;
 
-  final _initializationCompleter = Completer<void>();
-  Future<void> get initializationFuture => _initializationCompleter.future;
+  // ✅ OLD COMPATIBILITY
+  List<AssetEntity> get cachedAssets => _videos;
+  bool get isInitialized => _initialized;
 
-  Future<void> init({Function(double)? onProgress}) async {
-    if (_isInitialized) return;
-    
-    try {
-      debugPrint("📦 VideoCacheManager: Starting pre-load...");
-      
-      // Fetch albums
-      final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
-        type: RequestType.video,
-        filterOption: FilterOptionGroup(
-          videoOption: const FilterOption(
-            durationConstraint: DurationConstraint(
-              min: Duration(seconds: 1),
-            ),
-          ),
-        ),
+  // ✅ INIT (load videos)
+  Future<void> init({Function(double progress)? onProgress}) async {
+    await clear();
+
+    final permission = await PhotoManager.requestPermissionExtend();
+
+    if (!permission.isAuth) {
+      await PhotoManager.openSetting();
+      return;
+    }
+
+    final paths = await PhotoManager.getAssetPathList(
+      type: RequestType.video,
+      onlyAll: true,
+    );
+
+    if (paths.isEmpty) return;
+
+    final total = await paths.first.assetCountAsync;
+
+    int loaded = 0;
+    int page = 0;
+    const int pageSize = 100;
+
+    while (loaded < total) {
+      final items = await paths.first.getAssetListPaged(
+        page: page,
+        size: pageSize,
       );
 
-      if (albums.isNotEmpty) {
-        // Get total count
-        final totalCount = await albums[0].assetCountAsync;
-        debugPrint("📦 VideoCacheManager: Found $totalCount videos");
-        
-        // Fetch ALL videos (not just 200)
-        _cachedAssets = await albums[0].getAssetListRange(start: 0, end: totalCount);
-        debugPrint("📦 VideoCacheManager: Cached ${_cachedAssets.length} videos");
-        
-        onProgress?.call(1.0);
-      } else {
-        debugPrint("📦 VideoCacheManager: No video albums found");
-      }
-      
-      _isInitialized = true;
-      if (!_initializationCompleter.isCompleted) {
-        _initializationCompleter.complete();
-      }
-    } catch (e) {
-      debugPrint("❌ VideoCacheManager Error: $e");
-      if (!_initializationCompleter.isCompleted) {
-        _initializationCompleter.complete(); // Complete anyway to unblock UI
+      if (items.isEmpty) break;
+
+      _videos.addAll(items);
+      loaded += items.length;
+      page++;
+
+      if (onProgress != null) {
+        onProgress(loaded / total);
       }
     }
+
+    _initialized = true;
   }
 
-  void refresh() {
-    _isInitialized = false;
-    init();
+  // ✅ REFRESH (reload videos)
+  Future<void> refresh() async {
+    _initialized = false;
+    await init();
+  }
+
+  // ✅ STORE (used by splash if needed)
+  Future<void> storeVideos(List<AssetEntity> list) async {
+    _videos = list;
+    _initialized = true;
+  }
+
+  // ✅ CLEAR CACHE
+  Future<void> clear() async {
+    _videos.clear();
+    await PhotoManager.clearFileCache();
+  }
+
+  // ✅ GET VIDEOS
+  List<AssetEntity> getVideos() {
+    return _videos;
   }
 }

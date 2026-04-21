@@ -101,10 +101,21 @@ class AdminService {
       for (var doc in snapshot.docs) {
         final data = doc.data();
         
-        if (data['role'] == 'admin') adminCount++;
-        if (data['subscriptionStatus'] == 'free') freeUsers++;
-        if (data['subscriptionStatus'] == 'premium') premiumUsers++;
-        if (data['isActive'] == true) activeUsers++;
+        // Use lowercase for robust comparison
+        final String role = (data['role'] as String? ?? 'user').toLowerCase();
+        final String status = (data['subscriptionStatus'] as String? ?? 'free').toLowerCase();
+        final bool isActive = data['isActive'] as bool? ?? true;
+
+        if (role == 'admin') adminCount++;
+        
+        if (status == 'premium' || status == 'active') {
+          premiumUsers++;
+        } else {
+          // Default everything else to free
+          freeUsers++;
+        }
+        
+        if (isActive) activeUsers++;
       }
 
       return {
@@ -188,6 +199,42 @@ class AdminService {
       await updateSubscriptionPricing(updated);
     } catch (e) {
       throw 'Failed to update yearly price: $e';
+    }
+  }
+
+  // ==================== ANNOUNCEMENT MANAGEMENT ====================
+
+  Future<Map<String, dynamic>?> getAnnouncement() async {
+    try {
+      final doc = await _firestore.collection('appConfig').doc('announcement').get();
+      if (doc.exists && doc.data() != null) {
+        return doc.data();
+      }
+      return null;
+    } catch (e) {
+      print('Error getting announcement: $e');
+      return null;
+    }
+  }
+
+  Future<void> setAnnouncement(String message, DateTime deadline) async {
+    try {
+      await _firestore.collection('appConfig').doc('announcement').set({
+        'message': message,
+        'deadline': Timestamp.fromDate(deadline),
+        'isActive': true,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      throw 'Failed to set announcement: $e';
+    }
+  }
+
+  Future<void> clearAnnouncement() async {
+    try {
+      await _firestore.collection('appConfig').doc('announcement').delete();
+    } catch (e) {
+      throw 'Failed to clear announcement: $e';
     }
   }
 }

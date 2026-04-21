@@ -314,12 +314,13 @@ class _ExportScreenState extends State<ExportScreen> {
                 // ... (Resolution calc - keep mostly same)
                 // Calculate Output Resolution (Unified for both Engines)
                 int outHeight = widget.exportHeight;
-                double ratio = 9/16; // Default to 9:16
+                double ratio = 9/16; 
                 bool hasCustomRatio = false;
                 
                 try {
-                   if (widget.aspectRatio != "Original") {
-                       final parts = widget.aspectRatio.split(":");
+                   final clipAR = settings.aspectRatio; // Read from per-video settings
+                   if (clipAR != "Original") {
+                       final parts = clipAR.split(":");
                        if (parts.length == 2) {
                           ratio = double.parse(parts[0]) / double.parse(parts[1]);
                           hasCustomRatio = true;

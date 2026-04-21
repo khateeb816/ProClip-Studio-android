@@ -4,6 +4,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 import 'package:video_player/video_player.dart';
 import '../services/ffmpeg_service.dart';
+import '../services/video_cache_manager.dart';
 
 /// Video Picker for Audio Extraction
 /// Shows videos with preview player and extracts audio on selection
@@ -34,52 +35,56 @@ class _VideoAudioPickerScreenState extends State<VideoAudioPickerScreen> {
   }
 
   Future<void> _fetchVideos() async {
-    // Sort by creation date descending (newest first)
-    final FilterOptionGroup filterOption = FilterOptionGroup(
-      orders: [
-        const OrderOption(
-          type: OrderOptionType.createDate,
-          asc: false,
-        ),
-      ],
-    );
-
-    final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
-      type: RequestType.video,
-      filterOption: filterOption,
-    );
-    if (albums.isNotEmpty) {
-       // Request permissions first if needed (usually handled by app start, but good practice)
-       // Here we assume permission is granted as we got albums
-       
-       final total = await albums[0].assetCountAsync;
-       final assets = await albums[0].getAssetListRange(start: 0, end: total);
-       if (mounted) {
-         setState(() {
-           _videoAssets = assets;
-           _isLoading = false;
-         });
-       }
-    } else {
-       if (mounted) setState(() => _isLoading = false);
+    // Use the already cached and permission-handled videos
+    if (!VideoCacheManager().isInitialized) {
+      await VideoCacheManager().init();
+    }
+    
+    if (mounted) {
+      setState(() {
+        _videoAssets = List.from(VideoCacheManager().cachedAssets.reversed);
+        _isLoading = false;
+      });
     }
   }
 
   Future<void> _onSelectAsset(AssetEntity asset) async {
+    if (_selectedAsset?.id == asset.id && _videoController != null) return;
+
+    // Capture old controller and null it immediately in setState
+    final oldController = _videoController;
+    
     setState(() {
       _selectedAsset = asset;
       _isLoading = true;
+      _videoController = null;
     });
+
+    await oldController?.dispose();
     
-    _videoController?.dispose();
+    if (!mounted) return;
+
     final file = await asset.file;
     if (file != null && mounted) {
-      _videoController = VideoPlayerController.file(file);
-      await _videoController!.initialize();
-      if (mounted) {
-        setState(() => _isLoading = false);
-        _videoController!.play();
-        _videoController!.setLooping(true);
+      final controller = VideoPlayerController.file(file);
+      try {
+        await controller.initialize();
+        if (mounted) {
+          setState(() {
+            _videoController = controller;
+            _isLoading = false;
+          });
+          _videoController!.play();
+          _videoController!.setLooping(true);
+        } else {
+          await controller.dispose();
+        }
+      } catch (e) {
+        debugPrint("Error initializing video player: $e");
+        if (mounted) {
+          setState(() => _isLoading = false);
+        }
+        await controller.dispose();
       }
     } else {
       if (mounted) setState(() => _isLoading = false);
@@ -128,7 +133,7 @@ class _VideoAudioPickerScreenState extends State<VideoAudioPickerScreen> {
               color: Colors.black,
               child: _selectedAsset == null 
                   ? const Center(child: Text("Select a video to preview", style: TextStyle(color: Colors.white70)))
-                  : _videoController != null && _videoController!.value.isInitialized
+                  : !_isLoading && _videoController != null && _videoController!.value.isInitialized
                       ? Center(
                           child: AspectRatio(
                             aspectRatio: _videoController!.value.aspectRatio,
@@ -165,6 +170,14 @@ class _VideoAudioPickerScreenState extends State<VideoAudioPickerScreen> {
                               isOriginal: false,
                               thumbnailSize: const ThumbnailSize.square(200),
                               fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  color: Colors.grey[900],
+                                  child: const Center(
+                                    child: Icon(Icons.broken_image, color: Colors.grey),
+                                  ),
+                                );
+                              },
                             ),
                             if (isSelected)
                               Container(

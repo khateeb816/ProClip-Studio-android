@@ -24,11 +24,17 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
   final _yearlyController = TextEditingController();
   final _currencyController = TextEditingController();
   
+  // Announcement state
+  final _announcementController = TextEditingController();
+  DateTime? _announcementDeadline;
+  Map<String, dynamic>? _currentAnnouncement;
+  
   List<Map<String, dynamic>> _users = [];
   Map<String, int> _stats = {};
   SubscriptionPricing? _pricing;
   bool _isLoading = true;
   String _searchQuery = '';
+  String _statusFilter = 'all'; // all, free, premium, admin
   
   // Debug info
   String? _currentUID;
@@ -38,7 +44,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _currentUID = firebase_auth.FirebaseAuth.instance.currentUser?.uid;
     _loadData();
     _loadDebugInfo();
@@ -58,6 +64,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
     _monthlyController.dispose();
     _yearlyController.dispose();
     _currencyController.dispose();
+    _announcementController.dispose();
     super.dispose();
   }
 
@@ -68,12 +75,14 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
       final users = await _adminService.getAllUsers();
       final stats = await _adminService.getUserStats();
       final pricing = await _adminService.getSubscriptionPricing();
+      final announcement = await _adminService.getAnnouncement();
       
       if (mounted) {
         setState(() {
           _users = users;
           _stats = stats;
           _pricing = pricing;
+          _currentAnnouncement = announcement;
           
           // Update controllers if not currently focused to avoid jumping while typing
           _weeklyController.text = pricing.weeklyPrice.toString();
@@ -99,15 +108,29 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       appBar: AppBar(
-        title: const Text('Admin Panel'),
+        title: const Text('Admin Dashboard', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
         centerTitle: true,
-        backgroundColor: Colors.deepPurpleAccent,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Color(0xFF6A1B9A), Color(0xFF4A148C)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+        ),
         bottom: TabBar(
           controller: _tabController,
-          indicatorColor: Colors.white,
+          indicatorColor: Colors.cyanAccent,
+          indicatorWeight: 3,
+          labelColor: Colors.cyanAccent,
+          unselectedLabelColor: Colors.grey[400],
           tabs: const [
             Tab(icon: Icon(Icons.people), text: 'Users'),
             Tab(icon: Icon(Icons.attach_money), text: 'Pricing'),
+            Tab(icon: Icon(Icons.campaign), text: 'Announce'),
           ],
         ),
       ),
@@ -118,6 +141,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
               children: [
                 _buildUsersTab(),
                 _buildPricingTab(),
+                _buildAnnouncementsTab(),
               ],
             ),
     );
@@ -125,6 +149,17 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
 
   Widget _buildUsersTab() {
     final filteredUsers = _users.where((user) {
+      // Status Filter
+      final status = (user['subscriptionStatus'] as String? ?? 'free').toLowerCase();
+      final role = (user['role'] as String? ?? 'user').toLowerCase();
+      
+      if (_statusFilter == 'free') {
+        if (status == 'premium' || status == 'active') return false;
+      }
+      if (_statusFilter == 'premium' && (status != 'premium' && status != 'active')) return false;
+      if (_statusFilter == 'admin' && role != 'admin') return false;
+
+      // Search Query
       if (_searchQuery.isEmpty) return true;
       final name = (user['displayName'] as String? ?? '').toLowerCase();
       final email = (user['email'] as String? ?? '').toLowerCase();
@@ -138,7 +173,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
       children: [
         // Stats Cards
         Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: Row(
             children: [
               Expanded(child: _buildStatCard('Total', _stats['total'] ?? 0, Colors.blue)),
@@ -150,14 +185,31 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
           ),
         ),
 
+        // Filter Chips
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              _buildFilterChip('All', 'all', Icons.group),
+              const SizedBox(width: 8),
+              _buildFilterChip('Free', 'free', Icons.person_outline),
+              const SizedBox(width: 8),
+              _buildFilterChip('Premium', 'premium', Icons.star),
+              const SizedBox(width: 8),
+              _buildFilterChip('Admin', 'admin', Icons.admin_panel_settings),
+            ],
+          ),
+        ),
+
         // Search Bar
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
           child: TextField(
             onChanged: (value) => setState(() => _searchQuery = value),
             style: const TextStyle(color: Colors.white),
             decoration: InputDecoration(
-              hintText: 'Search users...',
+              hintText: 'Search by name, email or ID...',
               hintStyle: TextStyle(color: Colors.grey[400]),
               prefixIcon: const Icon(Icons.search, color: Colors.cyanAccent),
               filled: true,
@@ -166,19 +218,25 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide.none,
               ),
+              contentPadding: const EdgeInsets.symmetric(vertical: 0),
             ),
           ),
         ),
-
-        const SizedBox(height: 16),
 
         // Users List
         Expanded(
           child: filteredUsers.isEmpty
               ? Center(
-                  child: Text(
-                    'No users found',
-                    style: TextStyle(color: Colors.grey[400]),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.search_off, size: 48, color: Colors.grey[600]),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No users found matching your criteria',
+                        style: TextStyle(color: Colors.grey[400]),
+                      ),
+                    ],
                   ),
                 )
               : ListView.builder(
@@ -193,30 +251,73 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
     );
   }
 
+  Widget _buildFilterChip(String label, String value, IconData icon) {
+    final isSelected = _statusFilter == value;
+    return FilterChip(
+      showCheckmark: false,
+      avatar: Icon(
+        icon, 
+        size: 16, 
+        color: isSelected ? Colors.black : Colors.cyanAccent
+      ),
+      label: Text(label),
+      selected: isSelected,
+      onSelected: (selected) {
+        setState(() => _statusFilter = value);
+      },
+      selectedColor: Colors.cyanAccent,
+      backgroundColor: Colors.grey[900],
+      labelStyle: TextStyle(
+        color: isSelected ? Colors.black : Colors.white,
+        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        fontSize: 12,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(
+          color: isSelected ? Colors.cyanAccent : Colors.grey.withValues(alpha: 0.3),
+        ),
+      ),
+    );
+  }
+
   Widget _buildStatCard(String label, int count, Color color) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 8),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.2),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.5)),
+        gradient: LinearGradient(
+          colors: [color.withValues(alpha: 0.15), color.withValues(alpha: 0.05)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.3), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: color.withValues(alpha: 0.05),
+            blurRadius: 10,
+            spreadRadius: 1,
+          )
+        ]
       ),
       child: Column(
         children: [
           Text(
             '$count',
             style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
               color: color,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
             label,
             style: TextStyle(
-              fontSize: 12,
-              color: Colors.grey[400],
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey[300],
+              letterSpacing: 0.5,
             ),
           ),
         ],
@@ -259,18 +360,45 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
     }
 
     return Card(
-      color: Colors.grey[900],
-      margin: const EdgeInsets.only(bottom: 12),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: isActive ? Colors.cyanAccent : Colors.grey,
-          child: user['photoURL'] != null
-              ? ClipOval(child: Image.network(user['photoURL'], fit: BoxFit.cover))
-              : Text(
-                  (user['displayName'] as String? ?? 'U')[0].toUpperCase(),
-                  style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-                ),
-        ),
+      color: const Color(0xFF1A1A1A),
+      elevation: 4,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.05)),
+      ),
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(8.0),
+        child: ListTile(
+          leading: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: (isActive ? Colors.cyanAccent : Colors.redAccent).withValues(alpha: 0.3),
+                  blurRadius: 8,
+                  spreadRadius: 2,
+                )
+              ]
+            ),
+            child: GestureDetector(
+              onTap: () {
+                if (user['photoURL'] != null) {
+                  _showFullScreenImage(user['photoURL'], user['displayName'] as String? ?? 'User');
+                }
+              },
+              child: CircleAvatar(
+                radius: 24,
+                backgroundColor: isActive ? Colors.cyanAccent.withValues(alpha: 0.2) : Colors.redAccent.withValues(alpha: 0.2),
+                child: user['photoURL'] != null
+                    ? ClipOval(child: Image.network(user['photoURL'], fit: BoxFit.cover, width: 48, height: 48))
+                    : Text(
+                        (user['displayName'] as String? ?? 'U')[0].toUpperCase(),
+                        style: TextStyle(color: isActive ? Colors.cyanAccent : Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 20),
+                      ),
+              ),
+            ),
+          ),
         title: Row(
           children: [
             Expanded(
@@ -340,8 +468,9 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
           onPressed: () => _showEditUserDialog(user),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildPricingTab() {
     if (_pricing == null) {
@@ -507,6 +636,67 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
     }
   }
 
+  void _showFullScreenImage(String imageUrl, String userName) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Close',
+      barrierColor: Colors.black,
+      transitionDuration: const Duration(milliseconds: 300),
+      pageBuilder: (context, animation, secondaryAnimation) => Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            Center(
+              child: InteractiveViewer(
+                boundaryMargin: const EdgeInsets.all(20),
+                minScale: 0.5,
+                maxScale: 5.0,
+                child: SizedBox(
+                  width: MediaQuery.of(context).size.width,
+                  height: MediaQuery.of(context).size.height,
+                  child: Image.network(
+                    imageUrl,
+                    fit: BoxFit.contain,
+                    loadingBuilder: (context, child, loadingProgress) {
+                      if (loadingProgress == null) return child;
+                      return const Center(child: CircularProgressIndicator(color: Colors.cyanAccent));
+                    },
+                  ),
+                ),
+              ),
+            ),
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        userName,
+                        style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white, size: 32),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showEditUserDialog(Map<String, dynamic> user) {
     showDialog(
       context: context,
@@ -516,6 +706,184 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> with SingleTickerPr
           Navigator.pop(context);
           _loadData();
         },
+      ),
+    );
+  }
+
+  Widget _buildAnnouncementsTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Global Announcement',
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w900,
+              color: Colors.white,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Create a pop-up announcement that will be displayed to all users on the Home Screen.',
+            style: TextStyle(color: Colors.grey[400], fontSize: 14),
+          ),
+          const SizedBox(height: 32),
+          
+          if (_currentAnnouncement != null) ...[
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.cyanAccent.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.campaign, color: Colors.cyanAccent),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Active Announcement',
+                        style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.redAccent),
+                        onPressed: () async {
+                          await _adminService.clearAnnouncement();
+                          _loadData();
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Announcement cleared!'), backgroundColor: Colors.green),
+                            );
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    _currentAnnouncement!['message'] ?? '',
+                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Icon(Icons.timer, color: Colors.grey[400], size: 16),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Deadline: ${DateFormat('MMM dd, yyyy HH:mm').format((_currentAnnouncement!['deadline'] as Timestamp).toDate())}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 32),
+          ],
+
+          TextField(
+            controller: _announcementController,
+            maxLines: 4,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              labelText: 'Announcement Message',
+              labelStyle: TextStyle(color: Colors.grey[400]),
+              alignLabelWithHint: true,
+              filled: true,
+              fillColor: Colors.grey[900],
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: Colors.cyanAccent, width: 2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          
+          ListTile(
+            tileColor: Colors.grey[900],
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            leading: const Icon(Icons.date_range, color: Colors.cyanAccent),
+            title: Text(
+              _announcementDeadline == null 
+                  ? 'Set Expiration Deadline' 
+                  : 'Deadline: ${DateFormat('MMM dd, yyyy HH:mm').format(_announcementDeadline!)}',
+              style: const TextStyle(color: Colors.white),
+            ),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () async {
+              final date = await showDatePicker(
+                context: context,
+                initialDate: DateTime.now().add(const Duration(days: 1)),
+                firstDate: DateTime.now(),
+                lastDate: DateTime.now().add(const Duration(days: 365)),
+              );
+              if (date != null && mounted) {
+                final time = await showTimePicker(
+                  context: context,
+                  initialTime: TimeOfDay.now(),
+                );
+                if (time != null && mounted) {
+                  setState(() {
+                    _announcementDeadline = DateTime(
+                      date.year, date.month, date.day, time.hour, time.minute
+                    );
+                  });
+                }
+              }
+            },
+          ),
+          
+          const SizedBox(height: 32),
+          
+          SizedBox(
+            width: double.infinity,
+            height: 56,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                if (_announcementController.text.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Message is required')));
+                  return;
+                }
+                if (_announcementDeadline == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Deadline is required')));
+                  return;
+                }
+                
+                await _adminService.setAnnouncement(_announcementController.text, _announcementDeadline!);
+                _announcementController.clear();
+                setState(() => _announcementDeadline = null);
+                _loadData();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Announcement Published!'), backgroundColor: Colors.green),
+                  );
+                }
+              },
+              icon: const Icon(Icons.send),
+              label: const Text(
+                'Publish Announcement',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurpleAccent,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                elevation: 8,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

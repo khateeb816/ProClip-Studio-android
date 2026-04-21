@@ -35,7 +35,7 @@ class UpdateUI {
             if (externalUrl != null && externalUrl.isNotEmpty)
               TextButton(
                 onPressed: () => _openExternal(externalUrl),
-                child: const Text('External download'),
+                child: const Text('Update'),
               ),
           ],
         ),
@@ -61,15 +61,8 @@ class UpdateUI {
             if (externalUrl != null && externalUrl.isNotEmpty)
               TextButton(
                 onPressed: () => _openExternal(externalUrl),
-                child: const Text('External download'),
+                child: const Text('Update'),
               ),
-            TextButton(
-              onPressed: () {
-                onUpdateNow();
-                Navigator.of(ctx).pop();
-              },
-              child: const Text('Update Now'),
-            ),
           ],
         ),
       );
@@ -91,15 +84,8 @@ class UpdateUI {
           if (externalUrl != null && externalUrl.isNotEmpty)
             TextButton(
               onPressed: () => _openExternal(externalUrl),
-              child: const Text('External download'),
+              child: const Text('Update'),
             ),
-          TextButton(
-            onPressed: () {
-              onUpdateNow();
-              Navigator.of(ctx).pop(false);
-            },
-            child: const Text('Update Now'),
-          ),
         ],
       ),
     );

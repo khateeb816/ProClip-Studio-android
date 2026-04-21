@@ -9,6 +9,7 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'player_screen.dart';
 import 'profile_screen.dart';
 import '../services/auth_service.dart';
+import '../services/video_cache_manager.dart';
 
 class ClipsScreen extends StatefulWidget {
   const ClipsScreen({super.key});
@@ -117,70 +118,39 @@ class _ClipsScreenState extends State<ClipsScreen> with SingleTickerProviderStat
     }
   }
 
-  Future<void> _loadClips() async {
-    setState(() => _isLoading = true);
-    try {
-      // PERMISSION CHECK
-      final permission = await PhotoManager.requestPermissionExtend();
-      if (!permission.isAuth) {
-        if (mounted) {
-           ScaffoldMessenger.of(context).showSnackBar(
-             const SnackBar(content: Text("Please grant gallery permissions in Settings")),
-           );
-           setState(() => _isLoading = false);
-        }
-        return;
-      }
+ Future<void> _loadClips() async {
+  if (mounted) setState(() => _isLoading = true);
 
-      // Load ALL videos from gallery (Single Source of Truth)
-      final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
-        type: RequestType.video,
-        filterOption: FilterOptionGroup(
-          videoOption: const FilterOption(
-            durationConstraint: DurationConstraint(
-              min: Duration(seconds: 1), 
-            ),
-          ),
-        ),
-      );
-
-      List<AssetEntity> allVideos = [];
-      if (albums.isNotEmpty) {
-        final recentAlbum = albums.first;
-        allVideos = await recentAlbum.getAssetListRange(start: 0, end: 1000);
-      }
-
-      _sourceClips = allVideos; // Store Raw Data
-      
-      // OPTIMIZATION: Prune orphaned data (videos deleted externally)
-      // This keeps the database clean.
-      if (allVideos.isNotEmpty) {
-         // Create a Set of existing filenames for fast lookup
-         // Note: Accessing title might trigger async if not loaded, but typically AssetEntity has basic info.
-         // Warning: accessing .title on 1000 items might be slow if not cached by PhotoManager.
-         // However, PhotoManager usually caches basic properties.
-         final Set<String> activeNames = {};
-         for (final asset in allVideos) {
-            final t = asset.title;
-            if (t != null && t.isNotEmpty) activeNames.add(t);
-         }
-         
-         // Run prune in background to not block UI
-         ClipRepository.prune(activeNames);
-      }
-      
-      _applyFilters();          // Filter Data for Display
-
-    } catch (e) {
-      debugPrint("Error loading clips: $e");
-      _sourceClips = [];
-      _clips = [];
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+  try {
+    if (!VideoCacheManager().isInitialized) {
+      await VideoCacheManager().init();
     }
+
+    // Get a copy of the list and reverse it (from today to last / inverse)
+    List<AssetEntity> videos = List.from(VideoCacheManager().getVideos());
+    videos = videos.reversed.toList();
+
+    _sourceClips = videos;
+
+    // ✅ Fast prune (no manual loop)
+    final activeNames = videos
+        .map((e) => e.title ?? "")
+        .where((e) => e.isNotEmpty)
+        .toSet();
+
+    // Run async (non-blocking)
+    ClipRepository.prune(activeNames);
+
+    _applyFilters();
+
+  } catch (e) {
+    debugPrint("Error loading clips: $e");
+    _sourceClips = [];
+    _clips = [];
+  } finally {
+    if (mounted) setState(() => _isLoading = false);
   }
+}
 
   void _applyFilters() {
       // Start with Source
