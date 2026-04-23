@@ -312,8 +312,8 @@ class FFMpegService {
       final bool useBgm = audioPath != null && !isMuted && (audioMode == "mix" || audioMode == "background");
       List<String> cmd = [
         "-y",
-        "-i", inputPath,
         "-ss", start.toStringAsFixed(3),
+        "-i", inputPath,
       ];
 
       // Only include BGM as an input when it is actually used.
